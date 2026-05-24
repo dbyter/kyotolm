@@ -33,7 +33,7 @@ class TrainConfig:
     n_heads: int = 8
     n_kv_heads: int | None = None
     dropout: float = 0.1
-    batch_size: int = 8
+    batch_size: int = 24
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
     max_epochs: int = 1
