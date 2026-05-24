@@ -153,6 +153,15 @@ class KyotoLM(nn.Module):
             x = block(x)
         x = self.rms_norm(x)
         return self.lm_head(x)
+    
+    def generate(self, x: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
+        for _ in range(max_new_tokens):
+            logits = self.forward(x)
+            logits = logits[:, -1, :] / temperature
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            x = torch.cat([x, next_token], dim=1)
+        return x
 
 if __name__ == "__main__":
     model = Model(Config(vocab_size=30000))
