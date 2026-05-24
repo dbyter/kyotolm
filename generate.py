@@ -1,22 +1,39 @@
-"""
-Generate text using the trained model.
-"""
+"""Generate text with a trained checkpoint (optional path as argv[1])."""
+
+import sys
+from pathlib import Path
 
 import torch
 from llm import KyotoLM, Config
 from tokenizers import Tokenizer
+from trainer import get_device
 
-model = KyotoLM(Config(vocab_size=30000))
-model.load_state_dict(torch.load("checkpoints/lm.pt"))
+if len(sys.argv) > 1:
+    ckpt_path = Path(sys.argv[1])
+else:
+    pts = list(Path("checkpoints").glob("*.pt"))
+    ckpt_path = max(pts, key=lambda p: p.stat().st_mtime) if pts else Path("checkpoints/lm.pt")
+
+d = torch.load(ckpt_path, map_location="cpu")
+tc = d["config"]
+model = KyotoLM(
+    Config(
+        vocab_size=d["vocab_size"],
+        n_embedding_dim=tc["embedding_dim"],
+        n_head=tc["n_heads"],
+        n_layers=tc["n_layers"],
+    )
+)
+model.load_state_dict(d["model_state_dict"])
+dev = get_device()
+model.to(dev)
 model.eval()
 
-tokenizer = Tokenizer.from_file("tokenizer.json") 
-if not tokenizer: 
-    raise ValueError("Tokenizer not found")
-    
+tokenizer = Tokenizer.from_file("tokenizer.json")
+eos_id = tokenizer.encode("<eos>").ids[0]
+
 while True:
-    text = input("Enter a prompt: ")
-    text = tokenizer.encode(text).ids
-    # Add EOS token to the end of the prompt
-    text = text + [tokenizer.encode("<eos>").ids[0]]
-    print(tokenizer.decode(model.generate(text, max_new_tokens=100)))
+    ids = tokenizer.encode(input("Enter a prompt: ")).ids + [eos_id]
+    x = torch.tensor([ids], dtype=torch.long, device=dev)
+    out = model.generate(x, max_new_tokens=100)
+    print(tokenizer.decode(out[0].tolist()))
