@@ -83,7 +83,7 @@ def train_lm(
         raise ValueError(f"expected sequence length {seq_len}, got {inp.shape[1]} / {tgt.shape[1]}")
 
     ds = TensorDataset(inp, tgt)
-    loader = DataLoader(ds, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
+    loader = DataLoader(ds, batch_size=cfg.batch_size, shuffle=False, drop_last=False)
 
     n_seq = int(inp.shape[0])
     steps_per_epoch = len(loader)
@@ -120,6 +120,9 @@ def train_lm(
         state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
         payload = {
             "model_state_dict": state_cpu,
+            "optimizer_state_dict": optim.state_dict(),
+            "epoch": epoch,
+            "step": step,
             "vocab_size": vocab_size,
             "seq_len": seq_len,
             "config": dataclasses.asdict(cfg),
@@ -127,13 +130,25 @@ def train_lm(
         torch.save(payload, path)
         print(f"saved checkpoint to {path.resolve()} ({tag})")
 
-    model.train()
+    start_epoch = 0
     step = 0
+    if checkpoint_path is not None and Path(checkpoint_path).is_file():
+        d = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(d["model_state_dict"])
+        optim.load_state_dict(d["optimizer_state_dict"])
+        start_epoch = d.get("epoch", 0)
+        step = d.get("step", 0)
+        print(f"resumed from {checkpoint_path} (epoch {start_epoch + 1}, step {step})")
+
+    model.train()
     train_t0 = time.perf_counter()
-    for epoch in range(cfg.max_epochs):
+    for epoch in range(start_epoch, cfg.max_epochs):
         epoch_loss = 0.0
         n_batches = 0
-        for x, y in loader:
+        batches_done = step % steps_per_epoch
+        for batch_idx, (x, y) in enumerate(loader):
+            if batch_idx < batches_done:
+                continue
             x = x.to(dev)
             y = y.to(dev)
 
