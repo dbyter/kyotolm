@@ -5,6 +5,7 @@ Train ``Model`` on (input, next-token) sequences with AdamW on Apple MPS when av
 from __future__ import annotations
 
 import dataclasses
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -128,6 +129,7 @@ def train_lm(
 
     model.train()
     step = 0
+    train_t0 = time.perf_counter()
     for epoch in range(cfg.max_epochs):
         epoch_loss = 0.0
         n_batches = 0
@@ -147,12 +149,19 @@ def train_lm(
             n_batches += 1
             step += 1
             if step % cfg.log_every == 0:
-                print(f"epoch {epoch + 1} step {step} loss {loss.item():.4f}")
+                wall = time.perf_counter() - train_t0
+                print(
+                    f"epoch {epoch + 1} step {step} loss {loss.item():.4f} "
+                    f"wall {wall:.1f}s"
+                )
             if checkpoint_path is not None and cfg.save_every > 0 and step % cfg.save_every == 0:
                 save_ckpt(f"step {step}")
 
         mean = epoch_loss / max(n_batches, 1)
-        print(f"epoch {epoch + 1} mean loss {mean:.4f} (device={dev})")
+        wall = time.perf_counter() - train_t0
+        print(
+            f"epoch {epoch + 1} mean loss {mean:.4f} (device={dev}) wall {wall:.1f}s"
+        )
 
     if checkpoint_path is not None and (cfg.save_every <= 0 or step % cfg.save_every != 0):
         save_ckpt("final")

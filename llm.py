@@ -153,14 +153,38 @@ class KyotoLM(nn.Module):
             x = block(x)
         x = self.rms_norm(x)
         return self.lm_head(x)
-    
-    def generate(self, x: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
+        
+    @torch.no_grad()
+    def generate(
+        self,
+        x: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 0.7,
+        top_k: int = 50,
+    ) -> torch.Tensor:
+        self.eval()
+
         for _ in range(max_new_tokens):
             logits = self.forward(x)
-            logits = logits[:, -1, :] / temperature
-            probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
+
+            # only use logits for the last token
+            logits = logits[:, -1, :] / temperature  # (B, vocab_size)
+
+            if top_k is not None:
+                top_values, top_indices = torch.topk(logits, k=top_k, dim=-1)
+                probs = F.softmax(top_values, dim=-1)
+
+                # sample an index within the top-k list
+                sampled_idx = torch.multinomial(probs, num_samples=1)
+
+                # convert back to actual token id
+                next_token = torch.gather(top_indices, dim=-1, index=sampled_idx)
+            else:
+                probs = F.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+
             x = torch.cat([x, next_token], dim=1)
+
         return x
 
 if __name__ == "__main__":
