@@ -23,11 +23,11 @@ else:
         data_files={
             "train": [
                 f"{BASE}/shard_00000.parquet",
-                # f"{BASE}/shard_00001.parquet",
-                # f"{BASE}/shard_00002.parquet",
-                # f"{BASE}/shard_00003.parquet",
-                # f"{BASE}/shard_00004.parquet",
-                # f"{BASE}/shard_00005.parquet",
+                f"{BASE}/shard_00001.parquet",
+                f"{BASE}/shard_00002.parquet",
+                f"{BASE}/shard_00003.parquet",
+                f"{BASE}/shard_00004.parquet",
+                f"{BASE}/shard_00005.parquet",
                 # f"{BASE}/shard_00006.parquet",
                 # f"{BASE}/shard_00007.parquet",
                 # f"{BASE}/shard_00008.parquet",
