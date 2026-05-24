@@ -32,12 +32,13 @@ class TrainConfig:
     n_heads: int = 8
     n_kv_heads: int | None = None
     dropout: float = 0.1
-    batch_size: int = 2
+    batch_size: int = 8
     learning_rate: float = 3e-4
     weight_decay: float = 0.1
     max_epochs: int = 1
     grad_clip: float = 1.0
     log_every: int = 10
+    save_every: int = 100
 
 
 def train_lm(
@@ -49,7 +50,7 @@ def train_lm(
     config: TrainConfig | None = None,
     device: torch.device | None = None,
     checkpoint_path: Path | str | None = None,
-) -> Model:
+) -> KyotoLM:
     """
     Train a causal LM where each row of ``output_sequences`` is the next-token targets
     for the same row of ``input_sequences`` (same layout as ``main.py``).
@@ -62,7 +63,10 @@ def train_lm(
         config: Hyperparameters; defaults are conservative for long contexts on MPS.
         device: If ``None``, uses MPS when available, then CUDA, else CPU.
         checkpoint_path: If set, saves ``model_state_dict`` (CPU tensors) plus
-            ``vocab_size``, ``seq_len``, and ``config`` for reloading.
+            ``vocab_size``, ``seq_len``, and ``config`` for reloading. When
+            ``cfg.save_every > 0``, also writes the same file every ``save_every``
+            optimizer steps; always writes once at the end if the last step is not
+            already a checkpoint step (or if ``save_every <= 0``).
     """
     if len(input_sequences) != len(output_sequences):
         raise ValueError("input_sequences and output_sequences must have the same length")
@@ -107,6 +111,21 @@ def train_lm(
         betas=(0.9, 0.95),
     )
 
+    def save_ckpt(tag: str) -> None:
+        if checkpoint_path is None:
+            return
+        path = Path(checkpoint_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+        payload = {
+            "model_state_dict": state_cpu,
+            "vocab_size": vocab_size,
+            "seq_len": seq_len,
+            "config": dataclasses.asdict(cfg),
+        }
+        torch.save(payload, path)
+        print(f"saved checkpoint to {path.resolve()} ({tag})")
+
     model.train()
     step = 0
     for epoch in range(cfg.max_epochs):
@@ -129,22 +148,14 @@ def train_lm(
             step += 1
             if step % cfg.log_every == 0:
                 print(f"epoch {epoch + 1} step {step} loss {loss.item():.4f}")
+            if checkpoint_path is not None and cfg.save_every > 0 and step % cfg.save_every == 0:
+                save_ckpt(f"step {step}")
 
         mean = epoch_loss / max(n_batches, 1)
         print(f"epoch {epoch + 1} mean loss {mean:.4f} (device={dev})")
 
-    if checkpoint_path is not None:
-        path = Path(checkpoint_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-        payload = {
-            "model_state_dict": state_cpu,
-            "vocab_size": vocab_size,
-            "seq_len": seq_len,
-            "config": dataclasses.asdict(cfg),
-        }
-        torch.save(payload, path)
-        print(f"saved checkpoint to {path.resolve()}")
+    if checkpoint_path is not None and (cfg.save_every <= 0 or step % cfg.save_every != 0):
+        save_ckpt("final")
 
     return model
 
