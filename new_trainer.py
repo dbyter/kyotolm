@@ -72,7 +72,7 @@ n_seq = int(inp.shape[0])
 steps_per_epoch = len(loader)
 total_steps = steps_per_epoch * args.max_epochs
 print(
-    f"Training data: {n_seq} input rows, sequence length {args.seq_len}, "
+    f"Training data: {n_seq} input rows, sequence length {args.seq_length}, "
     f"tensor shape {tuple(inp.shape)}, batch_size={args.batch_size}"
 )
 print(
@@ -107,7 +107,7 @@ def save_ckpt(tag: str) -> None:
         "epoch": epoch,
         "step": step,
         "vocab_size": args.vocab_size,
-        "seq_len": args.seq_len,
+        "seq_length": args.seq_length,
         "config": dataclasses.asdict(args),
     }
     torch.save(payload, path)
