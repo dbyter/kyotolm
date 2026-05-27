@@ -20,7 +20,7 @@ args = parser.parse_args()
 def _get_data_batch(ds, rank, batch_size):
     start = rank * batch_size
     end = start + batch_size
-    return ds[start:end]
+    return ds.select(range(start, end))
 
 def load_data(rank, world_size, seq_len=2048):
     BASE = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
@@ -49,7 +49,7 @@ def load_data(rank, world_size, seq_len=2048):
     #print(f"EOS ids: {eos_ids}")
     for row in batch:
         text = row["text"]
-        all_tokens.extend(text)
+        all_tokens.extend(tokenizer.encode(text).ids)
         all_tokens.extend(eos_ids)
 
     i = 0
