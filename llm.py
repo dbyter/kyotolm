@@ -186,8 +186,3 @@ class KyotoLM(nn.Module):
             x = torch.cat([x, next_token], dim=1)
 
         return x
-
-if __name__ == "__main__":
-    model = Model(Config(vocab_size=30000))
-    x = torch.randint(0, 10000, (1, 2048))
-    print(model(x).shape)
