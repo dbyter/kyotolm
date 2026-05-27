@@ -58,4 +58,3 @@ tokenizer.train_from_iterator(
 )
 
 tokenizer.save("tokenizer.json")
-print(tokenizer.decode(tokenizer.encode("Hello, world!")))
