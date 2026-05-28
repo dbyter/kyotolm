@@ -11,4 +11,5 @@ wheels/
 
 # Local dataset caches (large)
 hf_cache/
+datasets/
 tokenized_dataset/

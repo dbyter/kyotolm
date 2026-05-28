@@ -61,7 +61,7 @@ else:
 
 # Load data; tokenize first and then load the dataset to device 
 print(f"Beginning data load")
-input_sequences, output_sequences = load_data(rank, world_size)
+input_sequences, output_sequences = load_data(rank, world_size, seq_len=args.seq_length)
 inp = torch.tensor(list(input_sequences), dtype=torch.long)
 tgt = torch.tensor(list(output_sequences), dtype=torch.long)
 

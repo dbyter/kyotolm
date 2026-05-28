@@ -1,61 +1,102 @@
 """
 Handles data loading for DDP training and tokenizes the data before returning the data loader
-
 """
 
-import datasets
+import time
+from pathlib import Path
 from argparse import ArgumentParser
+
+from datasets import load_dataset, load_from_disk
 from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.normalizers import NFKC
-from tokenizers.pre_tokenizers import ByteLevel
-from tokenizers.decoders import ByteLevel as ByteLevelDecoder
-from tokenizers.trainers import BpeTrainer
-from datasets import load_dataset
 
 parser = ArgumentParser()
 parser.add_argument("--n", type=int, default=9, help="Number of shards to download")
 args = parser.parse_args()
+
+BASE = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
+RAW_DATASET_PATH = Path("./datasets/saved_dataset")
+TOKENIZED_PATH = Path("./tokenized_dataset")
+
+
+def _load_raw_dataset():
+    if RAW_DATASET_PATH.exists():
+        return load_from_disk(str(RAW_DATASET_PATH))
+
+    return load_dataset(
+        "parquet",
+        data_files={
+            "train": [f"{BASE}/shard_{i:05d}.parquet" for i in range(args.n)]
+        },
+        split="train",
+        cache_dir="./hf_cache",
+    )
+
 
 def _get_data_batch(ds, rank, batch_size):
     start = rank * batch_size
     end = start + batch_size
     return ds.select(range(start, end))
 
-def load_data(rank, world_size, seq_len=2048):
-    BASE = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
-    ds = load_dataset(
-        "parquet",
-        data_files={
-            "train": [
-                f"{BASE}/shard_{i:05d}.parquet" for i in range(args.n)
-            ]
-        },
-        split="train",
-        cache_dir="./hf_cache",
-    )
-    print(f"\t\tDataset length: {len(ds)}")
-    batch_size = len(ds) // world_size
-    batch = _get_data_batch(ds, rank, batch_size)
-    tokenizer = Tokenizer.from_file("tokenizer.json")
-    print(f"\t\tLoaded Tokenizer")
+
+def _build_sequences(batch, eos_ids, seq_len):
+    all_tokens = []
+    n_docs = len(batch)
+    t0 = time.perf_counter()
+
+    for doc_idx, row in enumerate(batch):
+        all_tokens.extend(row["text"])
+        all_tokens.extend(eos_ids)
+        if doc_idx > 0 and doc_idx % 10_000 == 0:
+            elapsed = time.perf_counter() - t0
+            print(f"\t\tProcessed {doc_idx}/{n_docs} docs ({elapsed:.1f}s)")
 
     input_sequences = []
     output_sequences = []
-    all_tokens = []
-    
-    eos_ids = tokenizer.encode("<eos>").ids
-    #print(f"Length of batch: {batch}; example: {batch[0]}")
-    #print(f"EOS ids: {eos_ids}")
-    for row in batch:
-        text = row["text"]
-        all_tokens.extend(tokenizer.encode(text).ids)
-        all_tokens.extend(eos_ids)
-
     i = 0
     while i + seq_len + 1 <= len(all_tokens):
         input_sequences.append(all_tokens[i : i + seq_len])
         output_sequences.append(all_tokens[i + 1 : i + seq_len + 1])
         i += seq_len
 
+    elapsed = time.perf_counter() - t0
+    print(
+        f"\t\tBuilt {len(input_sequences)} sequences from {n_docs} docs "
+        f"({len(all_tokens):,} tokens, {elapsed:.1f}s)"
+    )
     return input_sequences, output_sequences
+
+
+def load_data(rank, world_size, seq_len=2048):
+    tokenizer = Tokenizer.from_file("tokenizer.json")
+    eos_ids = tokenizer.encode("<eos>").ids
+    print(f"\t\tLoaded Tokenizer")
+
+    if TOKENIZED_PATH.exists():
+        print(f"\t\tLoading pre-tokenized dataset from {TOKENIZED_PATH}")
+        encoded_ds = load_from_disk(str(TOKENIZED_PATH))
+    else:
+        print("\t\tNo tokenized cache found; tokenizing this rank's shard (batched)")
+        raw_ds = _load_raw_dataset()
+        print(f"\t\tDataset length: {len(raw_ds)}")
+        batch_size = len(raw_ds) // world_size
+        batch = _get_data_batch(raw_ds, rank, batch_size)
+
+        def encode_batch(examples):
+            encodings = tokenizer.encode_batch(examples["text"])
+            return {"text": [e.ids for e in encodings]}
+
+        t0 = time.perf_counter()
+        batch = batch.map(
+            encode_batch,
+            batched=True,
+            batch_size=1000,
+            desc=f"tokenize rank {rank}",
+        )
+        print(f"\t\tTokenized {len(batch)} docs in {time.perf_counter() - t0:.1f}s")
+
+    if TOKENIZED_PATH.exists():
+        print(f"\t\tDataset length: {len(encoded_ds)}")
+        batch_size = len(encoded_ds) // world_size
+        batch = _get_data_batch(encoded_ds, rank, batch_size)
+
+    return _build_sequences(batch, eos_ids, seq_len)
