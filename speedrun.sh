@@ -14,10 +14,10 @@ source .venv/bin/activate
 uv run bpe_trainer.py
 
 # Run the data downloader
-uv run data_downloader.py
+uv run data_downloader.py --n 40
 
 # Tokenize once and save to disk (trainer loads this instead of re-tokenizing)
-uv run data_tokenizer.py
+uv run data_tokenizer.py --n 40
 
 # Run the trainer (use uv so torchrun uses the project venv)
-uv run torchrun --nproc_per_node=2 new_trainer.py
+uv run torchrun --nproc_per_node=8 new_trainer.py

@@ -5,6 +5,7 @@ Handles data loading for DDP training and tokenizes the data before returning th
 import time
 from pathlib import Path
 from argparse import ArgumentParser
+import numpy as np
 
 from datasets import load_dataset, load_from_disk
 from tokenizers import Tokenizer
@@ -50,18 +51,20 @@ def _build_sequences(batch, eos_ids, seq_len):
             elapsed = time.perf_counter() - t0
             print(f"\t\tProcessed {doc_idx}/{n_docs} docs ({elapsed:.1f}s)")
 
-    input_sequences = []
-    output_sequences = []
-    i = 0
-    while i + seq_len + 1 <= len(all_tokens):
-        input_sequences.append(all_tokens[i : i + seq_len])
-        output_sequences.append(all_tokens[i + 1 : i + seq_len + 1])
-        i += seq_len
+    token_arr = np.array(all_tokens, dtype=np.int32)
+    del all_tokens
+
+    n_seq = (len(token_arr) - 1) // seq_len
+    usable = n_seq * seq_len + 1
+    token_arr = token_arr[:usable]
+
+    input_sequences  = token_arr[:-1].reshape(n_seq, seq_len)
+    output_sequences = token_arr[1:].reshape(n_seq, seq_len)
 
     elapsed = time.perf_counter() - t0
     print(
-        f"\t\tBuilt {len(input_sequences)} sequences from {n_docs} docs "
-        f"({len(all_tokens):,} tokens, {elapsed:.1f}s)"
+        f"\t\tBuilt {n_seq} sequences from {n_docs} docs "
+        f"({len(token_arr):,} tokens, {elapsed:.1f}s)"
     )
     return input_sequences, output_sequences
 

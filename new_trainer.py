@@ -68,8 +68,8 @@ else:
 # Load data; tokenize first and then load the dataset to device 
 print(f"Beginning data load")
 input_sequences, output_sequences = load_data(rank, world_size, seq_len=args.seq_length)
-inp = torch.tensor(list(input_sequences), dtype=torch.long)
-tgt = torch.tensor(list(output_sequences), dtype=torch.long)
+inp = torch.from_numpy(input_sequences).long()
+tgt = torch.from_numpy(output_sequences).long()
 max_id = max(inp.max().item(), tgt.max().item())
 min_id = min(inp.min().item(), tgt.min().item())
 if min_id < 0 or max_id >= args.vocab_size:
@@ -107,6 +107,18 @@ optim = AdamW(
     betas=(0.9, 0.95),
 )
 
+import math
+
+def get_lr(current_step: int) -> float:
+    """Linear warmup then cosine decay to 10% of peak lr."""
+    warmup_steps = max(1, int(0.02 * total_steps))  # 2% of training for warmup
+    if current_step < warmup_steps:
+        return current_step / warmup_steps
+    progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+    return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=get_lr)
+
 def save_ckpt(tag: str) -> None:
     if checkpoint_path is None:
         return
@@ -116,6 +128,7 @@ def save_ckpt(tag: str) -> None:
     payload = {
         "model_state_dict": state_cpu,
         "optimizer_state_dict": optim.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
         "step": step,
         "vocab_size": args.vocab_size,
@@ -132,6 +145,8 @@ if checkpoint_path is not None and Path(checkpoint_path).is_file():
     d = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(d["model_state_dict"])
     optim.load_state_dict(d["optimizer_state_dict"])
+    if "scheduler_state_dict" in d:
+        scheduler.load_state_dict(d["scheduler_state_dict"])
     start_epoch = d.get("epoch", 0)
     step = d.get("step", 0)
     print(f"resumed from {checkpoint_path} (epoch {start_epoch + 1}, step {step})")
@@ -168,6 +183,7 @@ for epoch in range(start_epoch, args.max_epochs):
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optim.step()
+            scheduler.step()
             optim.zero_grad(set_to_none=True)
 
             epoch_loss += accum_loss
@@ -177,9 +193,10 @@ for epoch in range(start_epoch, args.max_epochs):
 
             if step % args.log_every == 0:
                 wall = time.perf_counter() - train_t0
+                current_lr = scheduler.get_last_lr()[0]
                 print(
                     f"epoch {epoch + 1} step {step} loss {epoch_loss / n_batches:.4f} "
-                    f"wall {wall:.1f}s"
+                    f"lr {current_lr:.2e} wall {wall:.1f}s"
                 )
             if checkpoint_path is not None and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
