@@ -82,7 +82,7 @@ print(
 
 config = Config(
     vocab_size=args.vocab_size,
-    n_embedding_dim=args.embedding_dim,
+    n_embedding_dim=args.n_embedding_dim,
     n_head=args.n_heads,
     n_layers=args.n_layers,
 )
@@ -159,7 +159,7 @@ for epoch in range(start_epoch, args.max_epochs):
     mean = epoch_loss / max(n_batches, 1)
     wall = time.perf_counter() - train_t0
     print(
-        f"epoch {epoch + 1} mean loss {mean:.4f} (device={dev}) wall {wall:.1f}s"
+        f"epoch {epoch + 1} mean loss {mean:.4f} (device={device}) wall {wall:.1f}s"
     )
 
 if checkpoint_path is not None and (args.save_every <= 0 or step % args.save_every != 0):
