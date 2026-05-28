@@ -9,6 +9,7 @@ import torch
 import time 
 import os 
 from argparse import ArgumentParser
+from tokenizers import Tokenizer
 from llm import KyotoLM, Config
 from data_loader import load_data
 import torch
@@ -17,6 +18,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, TensorDataset
 from llm import KyotoLM, Config
 from pathlib import Path
+import dataclasses
 from dataclasses import dataclass
 
 
@@ -26,7 +28,7 @@ parser.add_argument("--n_layers", type=int, default=12, help="Number of layers i
 parser.add_argument("--n_heads", type=int, default=6, help="Number of heads in the model")
 parser.add_argument("--n_embedding_dim", type=int, default=768, help="Number of embedding dimensions in the model")
 parser.add_argument("--seq_length", type=int, default=2048, help="Max sequence length")
-parser.add_argument("--vocab_size", type=int, default=30000, help="Vocabulary size")
+parser.add_argument("--vocab_size", type=int, default=32000, help="Vocabulary size (must match tokenizer.json)")
 parser.add_argument("--dropout", type=float, default=0.1, help="Dropout parameter")
 parser.add_argument("--batch_size", type=int, default=24, help="Vocabulary size")
 parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate for opimization")
@@ -38,8 +40,13 @@ parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint
 parser.add_argument("--checkpoint_path", type=str, default="checkpoints/lm.pt", help="Path to save checkpoint to")
 args = parser.parse_args()
 
-
-model_config = Config(vocab_size=args.vocab_size, n_embedding_dim=args.n_embedding_dim, n_head=args.n_heads, n_layers=args.n_layers)
+tokenizer_vocab = Tokenizer.from_file("tokenizer.json").get_vocab_size(with_added_tokens=True)
+if args.vocab_size != tokenizer_vocab:
+    print(
+        f"Warning: --vocab_size={args.vocab_size} does not match tokenizer "
+        f"({tokenizer_vocab}); using tokenizer vocab size"
+    )
+    args.vocab_size = tokenizer_vocab
 
 # DDP setup
 rank = int(os.environ.get("RANK", 0))
@@ -64,6 +71,12 @@ print(f"Beginning data load")
 input_sequences, output_sequences = load_data(rank, world_size, seq_len=args.seq_length)
 inp = torch.tensor(list(input_sequences), dtype=torch.long)
 tgt = torch.tensor(list(output_sequences), dtype=torch.long)
+max_id = max(inp.max().item(), tgt.max().item())
+min_id = min(inp.min().item(), tgt.min().item())
+if min_id < 0 or max_id >= args.vocab_size:
+    raise ValueError(
+        f"Token ids out of range [{min_id}, {max_id}] for vocab_size={args.vocab_size}"
+    )
 
 ds = TensorDataset(inp, tgt) 
 loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, drop_last=False)

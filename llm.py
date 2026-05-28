@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
-    vocab_size: int = 30000
+    vocab_size: int = 32000
     n_embedding_dim: int = 768
     n_head: int = 6 # number of query heads
     n_layers: int = 12
