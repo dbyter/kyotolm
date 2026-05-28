@@ -33,7 +33,12 @@ tokenizer = Tokenizer.from_file("tokenizer.json")
 eos_id = tokenizer.encode("<eos>").ids[0]
 
 while True:
-    ids = tokenizer.encode(input("Enter a prompt: ")).ids + [eos_id]
+    prompt = input("Enter a prompt: ")
+    ids = tokenizer.encode(prompt).ids
+    prompt_len = len(ids)
     x = torch.tensor([ids], dtype=torch.long, device=dev)
-    out = model.generate(x, max_new_tokens=100)
-    print(tokenizer.decode(out[0].tolist()))
+    out = model.generate(x, max_new_tokens=200, stop_token=eos_id)
+    generated_ids = out[0][prompt_len:].tolist()
+    if eos_id in generated_ids:
+        generated_ids = generated_ids[:generated_ids.index(eos_id)]
+    print(prompt + tokenizer.decode(generated_ids))

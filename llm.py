@@ -165,6 +165,7 @@ class KyotoLM(nn.Module):
         max_new_tokens: int,
         temperature: float = 0.7,
         top_k: int = 50,
+        stop_token: Optional[int] = None,
     ) -> torch.Tensor:
         self.eval()
 
@@ -188,5 +189,8 @@ class KyotoLM(nn.Module):
                 next_token = torch.multinomial(probs, num_samples=1)
 
             x = torch.cat([x, next_token], dim=1)
+
+            if stop_token is not None and next_token.item() == stop_token:
+                break
 
         return x
