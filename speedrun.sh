@@ -20,4 +20,4 @@ uv run data_downloader.py
 uv run data_tokenizer.py
 
 # Run the trainer (use uv so torchrun uses the project venv)
-uv run torchrun --nproc_per_node=1 new_trainer.py
+uv run torchrun --nproc_per_node=2 new_trainer.py
