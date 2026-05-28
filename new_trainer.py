@@ -3,23 +3,19 @@ Train our LLM using torch DDP
 
 Handles data loading, model loading, and training
 """
-from inspect import Arguments
-from numpy import argsort
-import torch
-import time 
-import os 
+import os
+import time
 from argparse import ArgumentParser
-from tokenizers import Tokenizer
-from llm import KyotoLM, Config
-from data_loader import load_data
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, TensorDataset
+from tokenizers import Tokenizer
+
 from llm import KyotoLM, Config
-from pathlib import Path
-import dataclasses
-from dataclasses import dataclass
+from data_loader import load_data
 
 
 
@@ -41,7 +37,6 @@ parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint
 parser.add_argument("--checkpoint_path", type=str, default="checkpoints/lm.pt", help="Path to save checkpoint to")
 args = parser.parse_args()
 
-import os
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 tokenizer_vocab = Tokenizer.from_file("tokenizer.json").get_vocab_size(with_added_tokens=True)
@@ -125,7 +120,7 @@ def save_ckpt(tag: str) -> None:
         "step": step,
         "vocab_size": args.vocab_size,
         "seq_length": args.seq_length,
-        "config": dataclasses.asdict(args),
+        "config": vars(args),
     }
     torch.save(payload, path)
     print(f"saved checkpoint to {path.resolve()} ({tag})")
