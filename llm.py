@@ -13,6 +13,7 @@ Output Layer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_ckpt
 from typing import Optional
 
 from dataclasses import dataclass
@@ -150,7 +151,10 @@ class KyotoLM(nn.Module):
         # X -> (B, T, D)
         x = self.embedding(x)
         for block in self.transformer_blocks:
-            x = block(x)
+            if self.training:
+                x = grad_ckpt(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.rms_norm(x)
         return self.lm_head(x)
         
