@@ -35,10 +35,12 @@ eos_id = tokenizer.encode("<eos>").ids[0]
 while True:
     prompt = input("Enter a prompt: ")
     ids = tokenizer.encode(prompt).ids
-    prompt_len = len(ids)
     x = torch.tensor([ids], dtype=torch.long, device=dev)
-    out = model.generate(x, max_new_tokens=200, stop_token=eos_id)
-    generated_ids = out[0][prompt_len:].tolist()
-    if eos_id in generated_ids:
-        generated_ids = generated_ids[:generated_ids.index(eos_id)]
-    print(prompt + tokenizer.decode(generated_ids))
+    out = model.generate(x, max_new_tokens=200, stop_token=eos_id, repetition_penalty=1.3)
+    out_ids = out[0].tolist()
+    if eos_id in out_ids[len(ids):]:
+        out_ids = out_ids[:len(ids) + out_ids[len(ids):].index(eos_id)]
+    # Decode the full sequence to avoid broken byte boundaries, then strip the prompt
+    full_text = tokenizer.decode(out_ids)
+    prompt_decoded = tokenizer.decode(ids)
+    print(full_text[len(prompt_decoded):])

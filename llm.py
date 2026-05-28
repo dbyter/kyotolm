@@ -166,6 +166,7 @@ class KyotoLM(nn.Module):
         temperature: float = 0.7,
         top_k: int = 50,
         stop_token: Optional[int] = None,
+        repetition_penalty: float = 1.0,
     ) -> torch.Tensor:
         self.eval()
 
@@ -173,7 +174,16 @@ class KyotoLM(nn.Module):
             logits = self.forward(x)
 
             # only use logits for the last token
-            logits = logits[:, -1, :] / temperature  # (B, vocab_size)
+            logits = logits[:, -1, :]  # (B, vocab_size)
+
+            if repetition_penalty != 1.0:
+                for token_id in x[0].tolist():
+                    if logits[0, token_id] > 0:
+                        logits[0, token_id] /= repetition_penalty
+                    else:
+                        logits[0, token_id] *= repetition_penalty
+
+            logits = logits / temperature
 
             if top_k is not None:
                 top_values, top_indices = torch.topk(logits, k=top_k, dim=-1)
