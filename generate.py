@@ -19,9 +19,9 @@ tc = d["config"]
 model = KyotoLM(
     Config(
         vocab_size=d["vocab_size"],
-        n_embedding_dim=tc["embedding_dim"],
-        n_head=tc["n_heads"],
-        n_layers=tc["n_layers"],
+        n_embedding_dim=tc.get("n_embedding_dim", tc.get("embedding_dim", 768)),
+        n_head=tc.get("n_heads", 6),
+        n_layers=tc.get("n_layers", 12),
     )
 )
 model.load_state_dict(d["model_state_dict"])
