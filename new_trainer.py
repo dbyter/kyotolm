@@ -73,7 +73,7 @@ if is_master:
 
 if use_ddp:
     # Broadcast the (possibly corrected) vocab_size from master to all ranks
-    vocab_tensor = torch.tensor([args.vocab_size], dtype=torch.long)
+    vocab_tensor = torch.tensor([args.vocab_size], dtype=torch.long, device=device)
     dist.broadcast(vocab_tensor, src=0)
     args.vocab_size = int(vocab_tensor.item())
 
