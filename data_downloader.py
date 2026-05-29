@@ -1,6 +1,9 @@
 from pathlib import Path
 from argparse import ArgumentParser
+from dotenv import load_dotenv
 from datasets import load_dataset
+
+load_dotenv()
 
 # n arg
 parser = ArgumentParser()

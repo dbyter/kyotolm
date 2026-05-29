@@ -13,3 +13,10 @@ wheels/
 hf_cache/
 datasets/
 tokenized_dataset/
+
+# Checkpoints
+checkpoints/
+*.pt
+
+# Secrets
+.env
