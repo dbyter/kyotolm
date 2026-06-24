@@ -129,7 +129,7 @@ def make_sft_dataset(rank: int, world_size: int, seq_len: int = 2048, split: str
     smoltalk = load_dataset("HuggingFaceTB/smol-smoltalk", split=split, streaming=True)
 
     gsm8k_split = "train" if split == "train" else "test"
-    gsm8k = load_dataset("gsm8k", "main", split=gsm8k_split, streaming=True).map(_format_gsm8k)
+    gsm8k = load_dataset("openai/gsm8k", "main", split=gsm8k_split, streaming=True).map(_format_gsm8k)
 
     mmlu_split = "auxiliary_train" if split == "train" else "test"
     mmlu = load_dataset("cais/mmlu", "all", split=mmlu_split, streaming=True).map(_format_mmlu)
