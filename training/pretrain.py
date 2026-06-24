@@ -19,7 +19,7 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tokenizers import Tokenizer
 
-from llm import KyotoLM, Config
+from models.kyotov1 import KyotoLM, Config
 from data_loader import make_dataset
 
 

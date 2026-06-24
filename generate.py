@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 import torch
-from llm import KyotoLM, Config
+from models.kyotov1 import KyotoLM, Config
 from tokenizers import Tokenizer
 
 if len(sys.argv) > 1:
