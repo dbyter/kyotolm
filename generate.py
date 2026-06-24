@@ -40,4 +40,4 @@ while True:
     generated_ids = out_ids[len(ids):]
     if eos_id in generated_ids:
         generated_ids = generated_ids[:generated_ids.index(eos_id)]
-    print(tokenizer.decode(ids + generated_ids))
+    print(prompt + tokenizer.decode(generated_ids))

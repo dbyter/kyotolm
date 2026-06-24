@@ -26,7 +26,7 @@ from data_loader import make_dataset
 parser = ArgumentParser()
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
-parser.add_argument("--wandb_save_artifacts", action="store_true", help="Upload checkpoints as W&B artifacts (can use significant storage)")
+parser.add_argument("--no_wandb_artifacts", action="store_true", help="Disable uploading checkpoints as W&B artifacts")
 parser.add_argument("--n_layers", type=int, default=12, help="Number of layers in the model")
 parser.add_argument("--n_heads", type=int, default=6, help="Number of heads in the model")
 parser.add_argument("--n_embedding_dim", type=int, default=768, help="Number of embedding dimensions in the model")
@@ -166,7 +166,7 @@ def save_ckpt(tag: str) -> None:
     }
     torch.save(payload, path)
     print(f"saved checkpoint to {path.resolve()} ({tag})")
-    if use_wandb and args.wandb_save_artifacts:
+    if use_wandb and not args.no_wandb_artifacts:
         artifact = wandb.Artifact(
             name=f"checkpoint-{tag.replace(' ', '-')}",
             type="model",
