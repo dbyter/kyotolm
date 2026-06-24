@@ -33,7 +33,7 @@ eos_id = tokenizer.encode("<eos>").ids[0]
 
 while True:
     prompt = input("Enter a prompt: ")
-    ids = tokenizer.encode(prompt).ids
+    ids = tokenizer.encode(prompt.rstrip()).ids
     x = torch.tensor([ids], dtype=torch.long, device=dev)
     out = model.generate(x, max_new_tokens=200, stop_token=eos_id, repetition_penalty=1.3)
     out_ids = out[0].tolist()
