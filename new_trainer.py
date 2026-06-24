@@ -10,6 +10,7 @@ import time
 from argparse import ArgumentParser
 from pathlib import Path
 
+import wandb
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -23,6 +24,9 @@ from data_loader import make_dataset
 
 
 parser = ArgumentParser()
+parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
+parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
+parser.add_argument("--wandb_save_artifacts", action="store_true", help="Upload checkpoints as W&B artifacts (can use significant storage)")
 parser.add_argument("--n_layers", type=int, default=12, help="Number of layers in the model")
 parser.add_argument("--n_heads", type=int, default=6, help="Number of heads in the model")
 parser.add_argument("--n_embedding_dim", type=int, default=768, help="Number of embedding dimensions in the model")
@@ -36,7 +40,7 @@ parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW optim
 parser.add_argument("--max_epochs", type=int, default=1, help="Maximum number of epochs")
 parser.add_argument("--grad_clip", type=float, default=0.1, help="Clip gradient at")
 parser.add_argument("--log_every", type=int, default=10, help="Log step progress + loss every N steps")
-parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint model every N steps")
+parser.add_argument("--save_every", type=int, default=1000, help="Save checkpoint model every N steps")
 parser.add_argument("--checkpoint_path", type=str, default="checkpoints/lm.pt", help="Path to save checkpoint to")
 parser.add_argument("--n_shards", type=int, default=40, help="Number of HF parquet shards to stream")
 parser.add_argument("--steps_per_epoch", type=int, default=0, help="Max optimizer steps per epoch (0 = stream until data exhausted)")
@@ -128,6 +132,16 @@ if checkpoint_path.is_file():
     if is_master:
         print(f"resumed from {checkpoint_path} (epoch {start_epoch + 1}, step {step})")
 
+# Init wandb on master only, after checkpoint load so `step` reflects any resume
+use_wandb = is_master and bool(args.wandb_project)
+if use_wandb:
+    wandb.init(
+        project=args.wandb_project,
+        name=args.wandb_run_name or None,
+        config=vars(args),
+        resume="allow",
+    )
+
 # Wrap model in DDP after loading checkpoint so all ranks start with identical weights
 if use_ddp:
     model = DDP(model, device_ids=[rank])
@@ -152,6 +166,14 @@ def save_ckpt(tag: str) -> None:
     }
     torch.save(payload, path)
     print(f"saved checkpoint to {path.resolve()} ({tag})")
+    if use_wandb and args.wandb_save_artifacts:
+        artifact = wandb.Artifact(
+            name=f"checkpoint-{tag.replace(' ', '-')}",
+            type="model",
+            metadata={"step": step, "epoch": epoch},
+        )
+        artifact.add_file(str(path.resolve()))
+        wandb.log_artifact(artifact)
 
 
 use_amp = torch.cuda.is_available()
@@ -201,10 +223,13 @@ for epoch in range(start_epoch, args.max_epochs):
             if is_master and step % args.log_every == 0:
                 wall = time.perf_counter() - train_t0
                 current_lr = scheduler.get_last_lr()[0]
+                mean_loss = epoch_loss / n_batches
                 print(
-                    f"epoch {epoch + 1} step {step} loss {epoch_loss / n_batches:.4f} "
+                    f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} "
                     f"lr {current_lr:.2e} wall {wall:.1f}s"
                 )
+                if use_wandb:
+                    wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
             if is_master and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
 
@@ -212,9 +237,14 @@ for epoch in range(start_epoch, args.max_epochs):
         mean = epoch_loss / max(n_batches, 1)
         wall = time.perf_counter() - train_t0
         print(f"epoch {epoch + 1} mean loss {mean:.4f} (device={device}) wall {wall:.1f}s")
+        if use_wandb:
+            wandb.log({"epoch/mean_loss": mean, "epoch/wall": wall}, step=step)
 
 if is_master and (args.save_every <= 0 or step % args.save_every != 0):
     save_ckpt("final")
+
+if use_wandb:
+    wandb.finish()
 
 if use_ddp:
     dist.destroy_process_group()
