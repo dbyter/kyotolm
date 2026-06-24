@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from llm import KyotoLM, Config
 from tokenizers import Tokenizer
-from trainer import get_device
 
 if len(sys.argv) > 1:
     ckpt_path = Path(sys.argv[1])
@@ -25,7 +24,7 @@ model = KyotoLM(
     )
 )
 model.load_state_dict(d["model_state_dict"])
-dev = get_device()
+dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(dev)
 model.eval()
 
