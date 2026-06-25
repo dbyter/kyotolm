@@ -19,7 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from models.kyotov1 import KyotoLM, Config
+from models.kyotolmv2 import KyotoLM, Config
 from data_loader import make_sft_dataset
 
 

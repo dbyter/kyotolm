@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import torch
-from models.kyotov1 import KyotoLM, Config
+from models.kyotolmv2 import KyotoLM, Config
 from tokenizers import Tokenizer
 
 parser = ArgumentParser()

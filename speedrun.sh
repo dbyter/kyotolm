@@ -24,3 +24,4 @@ uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --save_every 500 \
     --wandb_project kyotolm \
     --fp8
+

@@ -79,7 +79,7 @@ class MultiHeadAttention (nn.Module):
             return x_rot
 
         return rotate(q), rotate(k)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, t, _ = x.shape
         q = self.q_proj(x).view(b, t, self.n_head, self.d_head).transpose(1, 2)  # (B, H, T, D_head)
@@ -157,7 +157,7 @@ class KyotoLM(nn.Module):
                 x = block(x)
         x = self.rms_norm(x)
         return self.lm_head(x)
-        
+
     @torch.no_grad()
     def generate(
         self,
