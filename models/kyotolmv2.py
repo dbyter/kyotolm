@@ -110,6 +110,7 @@ class KyotoLM(nn.Module):
         self.rms_norm = RMSNorm(config)
         self.lm_head  = nn.Linear(config.n_embedding_dim, config.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight  # weight tying
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding(x)
