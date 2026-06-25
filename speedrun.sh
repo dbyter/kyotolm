@@ -15,7 +15,6 @@ wandb login
 # Run the BPE trainer
 uv run bpe_trainer.py
 
-# Run the trainer — streams data from HF Hub on demand, no pre-download needed
 NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --n_layers 18 --n_heads 8 --n_embedding_dim 1024 \

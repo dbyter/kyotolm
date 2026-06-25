@@ -44,7 +44,8 @@ parser.add_argument("--log_every", type=int, default=10, help="Log step progress
 parser.add_argument("--save_every", type=int, default=1000, help="Save checkpoint model every N steps")
 parser.add_argument("--checkpoint_path", type=str, default="checkpoints/lm.pt", help="Path to save checkpoint to")
 parser.add_argument("--n_shards", type=int, default=40, help="Number of HF parquet shards to stream")
-parser.add_argument("--steps_per_epoch", type=int, default=0, help="Max optimizer steps per epoch (0 = stream until data exhausted)")
+parser.add_argument("--tokens_per_shard", type=int, default=60_000_000, help="Approximate tokens per shard (used to auto-compute total_steps)")
+parser.add_argument("--steps_per_epoch", type=int, default=0, help="Override total steps for LR schedule (0 = auto-compute from n_shards)")
 args = parser.parse_args()
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -85,12 +86,16 @@ if use_ddp:
 if is_master:
     print(f"Building streaming dataset (rank {rank}/{world_size})")
 ds = make_dataset(rank, world_size, seq_len=args.seq_length, n_shards=args.n_shards)
-loader = DataLoader(ds, batch_size=args.batch_size, num_workers=0, pin_memory=torch.cuda.is_available())
+loader = DataLoader(ds, batch_size=args.batch_size, num_workers=2, prefetch_factor=4, pin_memory=torch.cuda.is_available())
 
-# Streaming dataset has no known length upfront; used for LR schedule
-total_steps = args.max_epochs * (args.steps_per_epoch if args.steps_per_epoch > 0 else 10_000)
+# Auto-compute total steps from data size so LR schedule decays to floor exactly when data runs out
+tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
+if args.steps_per_epoch > 0:
+    total_steps = args.max_epochs * args.steps_per_epoch
+else:
+    total_steps = args.max_epochs * (args.n_shards * args.tokens_per_shard) // tokens_per_step
 if is_master:
-    print(f"Streaming {args.n_shards} shards, seq_len={args.seq_length}, batch_size={args.batch_size}, device={device}")
+    print(f"Streaming {args.n_shards} shards — {total_steps} total steps ({tokens_per_step * total_steps / 1e9:.2f}B tokens), seq_len={args.seq_length}, batch_size={args.batch_size}")
 
 config = Config(
     vocab_size=args.vocab_size,
@@ -105,6 +110,10 @@ if args.fp8 and torch.cuda.is_available():
     convert_to_float8_training(model)
     if is_master:
         print("fp8 training enabled")
+
+model = torch.compile(model, dynamic=False)
+if is_master:
+    print("torch.compile enabled")
 
 optim = AdamW(
     model.parameters(),

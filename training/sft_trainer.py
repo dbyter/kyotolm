@@ -109,6 +109,10 @@ if args.fp8 and torch.cuda.is_available():
     if is_master:
         print("fp8 training enabled")
 
+model = torch.compile(model, dynamic=False)
+if is_master:
+    print("torch.compile enabled")
+
 # Dataset
 if is_master:
     print("Building SFT dataset (smol-smoltalk, streaming)...")
