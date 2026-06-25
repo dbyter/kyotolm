@@ -103,15 +103,15 @@ config = Config(
     n_head=args.n_heads,
     n_layers=args.n_layers,
 )
-model = KyotoLM(config).to(device)
+raw_model = KyotoLM(config).to(device)
 
 if args.fp8 and torch.cuda.is_available():
     from torchao.float8 import convert_to_float8_training
-    convert_to_float8_training(model)
+    convert_to_float8_training(raw_model)
     if is_master:
         print("fp8 training enabled")
 
-model = torch.compile(model, dynamic=False)
+model = torch.compile(raw_model, dynamic=False)
 if is_master:
     print("torch.compile enabled")
 

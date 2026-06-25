@@ -35,7 +35,8 @@ model = KyotoLM(
         n_layers=tc.get("n_layers", 12),
     )
 )
-model.load_state_dict(d["model_state_dict"])
+state_dict = {k.replace("_orig_mod.", ""): v for k, v in d["model_state_dict"].items()}
+model.load_state_dict(state_dict)
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(dev)
 model.eval()
