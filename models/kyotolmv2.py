@@ -109,6 +109,7 @@ class KyotoLM(nn.Module):
         self.transformer_blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layers)])
         self.rms_norm = RMSNorm(config)
         self.lm_head  = nn.Linear(config.n_embedding_dim, config.vocab_size, bias=False)
+        self.lm_head.weight = self.embedding.weight  # weight tying
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding(x)
