@@ -4,11 +4,12 @@ KyotoLM v2 — optimized architecture.
 Changes vs v1:
 - FlashAttention via F.scaled_dot_product_attention (O(T) memory, ~3-5x faster at seq_len=2048)
 - Cached RoPE cos/sin buffers (computed once per seq_len, not every forward pass)
-- No gradient checkpointing (saves ~40% compute; use only if you run OOM)
+- Gradient checkpointing kept (required at batch_size=48, seq_len=2048 on 140GB H200)
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_ckpt
 from typing import Optional
 from dataclasses import dataclass
 
@@ -112,7 +113,10 @@ class KyotoLM(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding(x)
         for block in self.transformer_blocks:
-            x = block(x)
+            if self.training:
+                x = grad_ckpt(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.rms_norm(x)
         return self.lm_head(x)
 
