@@ -17,4 +17,10 @@ uv run bpe_trainer.py
 
 # Run the trainer — streams data from HF Hub on demand, no pre-download needed
 NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
-uv run torchrun --nproc_per_node=$NGPU -m training.pretrain --n_shards 40 --wandb_project kyotolm
+uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
+    --n_layers 18 --n_heads 16 --n_embedding_dim 2048 \
+    --n_shards 175 \
+    --learning_rate 1e-4 \
+    --save_every 500 \
+    --wandb_project kyotolm \
+    --fp8

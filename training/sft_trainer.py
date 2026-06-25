@@ -27,6 +27,7 @@ parser = ArgumentParser()
 parser.add_argument("--pretrained_checkpoint", type=str, required=True, help="Local path or wandb artifact name (e.g. checkpoint-step-1000:latest)")
 parser.add_argument("--sft_checkpoint_path", type=str, default="checkpoints/sft.pt", help="Path to save SFT checkpoints")
 parser.add_argument("--seq_length", type=int, default=2048, help="Max sequence length")
+parser.add_argument("--fp8", action="store_true", help="Use fp8 training for ~2x throughput (requires H100/H200 and torch>=2.11)")
 parser.add_argument("--batch_size", type=int, default=16, help="Per-GPU micro-batch size")
 parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Peak learning rate")
@@ -101,6 +102,12 @@ model = KyotoLM(config).to(device)
 model.load_state_dict(d["model_state_dict"])
 if is_master:
     print(f"Loaded model: {config}")
+
+if args.fp8 and torch.cuda.is_available():
+    from torchao.float8 import convert_to_float8_training
+    convert_to_float8_training(model)
+    if is_master:
+        print("fp8 training enabled")
 
 # Dataset
 if is_master:

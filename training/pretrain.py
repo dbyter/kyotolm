@@ -24,6 +24,7 @@ from data_loader import make_dataset
 
 
 parser = ArgumentParser()
+parser.add_argument("--fp8", action="store_true", help="Use fp8 training for ~2x throughput (requires H100/H200 and torch>=2.11)")
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
 parser.add_argument("--no_wandb_artifacts", action="store_true", help="Disable uploading checkpoints as W&B artifacts")
@@ -98,6 +99,12 @@ config = Config(
     n_layers=args.n_layers,
 )
 model = KyotoLM(config).to(device)
+
+if args.fp8 and torch.cuda.is_available():
+    from torchao.float8 import convert_to_float8_training
+    convert_to_float8_training(model)
+    if is_master:
+        print("fp8 training enabled")
 
 optim = AdamW(
     model.parameters(),

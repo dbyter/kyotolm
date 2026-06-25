@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.0",
     "python-dotenv>=1.0",
     "tokenizers>=0.21",
-    "torch>=2.5",
+    "torch>=2.11",
+    "torchao>=0.17",
     "wandb>=0.19",
 ]
