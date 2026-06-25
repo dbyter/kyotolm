@@ -150,7 +150,11 @@ def save_ckpt(tag: str) -> None:
         "step": step,
         "vocab_size": config.vocab_size,
         "seq_length": args.seq_length,
-        "config": vars(args),
+        "config": {
+            "n_embedding_dim": config.n_embedding_dim,
+            "n_heads": config.n_head,
+            "n_layers": config.n_layers,
+        },
     }
     torch.save(payload, path)
     print(f"saved SFT checkpoint to {path.resolve()} ({tag})")
