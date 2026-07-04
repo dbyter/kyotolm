@@ -7,6 +7,7 @@ import contextlib
 import math
 import os
 import shutil
+import threading
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -191,9 +192,13 @@ def save_ckpt(tag: str) -> None:
         )
         artifact.add_file(str(path.resolve()))
         logged = wandb.log_artifact(artifact)
-        logged.wait()
-        shutil.rmtree(Path("~/.cache/wandb/artifacts").expanduser(), ignore_errors=True)
-        shutil.rmtree(Path("~/.local/share/wandb").expanduser(), ignore_errors=True)
+
+        def _cleanup_after_upload():
+            logged.wait()
+            shutil.rmtree(Path("~/.cache/wandb/artifacts").expanduser(), ignore_errors=True)
+            shutil.rmtree(Path("~/.local/share/wandb").expanduser(), ignore_errors=True)
+
+        threading.Thread(target=_cleanup_after_upload, daemon=True).start()
 
 
 use_amp = torch.cuda.is_available()
