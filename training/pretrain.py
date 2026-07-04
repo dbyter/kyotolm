@@ -189,7 +189,9 @@ def save_ckpt(tag: str) -> None:
             metadata={"step": step, "epoch": epoch},
         )
         artifact.add_file(str(path.resolve()))
-        wandb.log_artifact(artifact)
+        logged = wandb.log_artifact(artifact)
+        logged.wait()
+        os.system("wandb artifact cache cleanup 1GB")
 
 
 use_amp = torch.cuda.is_available()

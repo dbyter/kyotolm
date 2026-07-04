@@ -16,7 +16,7 @@ wandb login
 uv run bpe_trainer.py
 
 NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
-N_SHARDS=53
+N_SHARDS=150
 PRETRAIN_STEPS=$(python -c "print(int($N_SHARDS * 60_000_000 / (24 * 2048 * $NGPU)))")
 
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
@@ -27,7 +27,6 @@ uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --learning_rate 1e-4 \
     --save_every 500 \
     --wandb_project kyotolm \
-    --no_wandb_artifacts \
     --fp8
 
 # SFT — fine-tune the pretrained checkpoint on smol-smoltalk + MMLU + GSM8K
@@ -39,6 +38,5 @@ uv run torchrun --nproc_per_node=$NGPU -m training.sft_trainer \
     --learning_rate 1e-4 \
     --save_every 500 \
     --wandb_project kyotolm \
-    --no_wandb_artifacts \
     --fp8
 
