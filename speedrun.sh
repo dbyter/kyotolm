@@ -20,7 +20,7 @@ N_SHARDS=53
 PRETRAIN_STEPS=$(python -c "print(int($N_SHARDS * 60_000_000 / (48 * 2048 * $NGPU)))")
 
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
-    --n_layers 18 --n_heads 8 --n_embedding_dim 1024 \
+    --n_layers 20 --n_heads 10 --n_embedding_dim 1280 \
     --n_shards $N_SHARDS \
     --steps_per_epoch $PRETRAIN_STEPS \
     --learning_rate 1e-4 \
@@ -29,8 +29,10 @@ uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --fp8
 
 # SFT — fine-tune the pretrained checkpoint on smol-smoltalk + MMLU + GSM8K
+SFT_STEPS=$(python -c "print(460341 // 16 // $NGPU)")
 uv run torchrun --nproc_per_node=$NGPU -m training.sft_trainer \
     --pretrained_checkpoint checkpoints/lm.pt \
+    --steps_per_epoch $SFT_STEPS \
     --learning_rate 1e-4 \
     --save_every 500 \
     --wandb_project kyotolm \

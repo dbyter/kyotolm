@@ -120,7 +120,15 @@ if is_master:
 ds = make_sft_dataset(rank, world_size, seq_len=args.seq_length)
 loader = DataLoader(ds, batch_size=args.batch_size, num_workers=0, pin_memory=torch.cuda.is_available())
 
-total_steps = args.max_epochs * (args.steps_per_epoch if args.steps_per_epoch > 0 else 28_000)
+# smol-smoltalk has 460k train examples; at batch=16, seq=2048, 8 GPUs -> ~3600 steps
+SFT_DATASET_EXAMPLES = 460_341
+tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
+if args.steps_per_epoch > 0:
+    total_steps = args.max_epochs * args.steps_per_epoch
+else:
+    total_steps = args.max_epochs * (SFT_DATASET_EXAMPLES // args.batch_size // world_size)
+if is_master:
+    print(f"SFT total steps: {total_steps}")
 
 optim = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, betas=(0.9, 0.95))
 

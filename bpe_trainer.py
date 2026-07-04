@@ -41,7 +41,7 @@ tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=False)
 tokenizer.decoder = ByteLevelDecoder()
 
 trainer = BpeTrainer(
-    vocab_size=32000,
+    vocab_size=65536,
     min_frequency=2,
     special_tokens=[
         "<pad>",
