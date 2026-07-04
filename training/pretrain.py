@@ -6,6 +6,7 @@ Handles data loading, model loading, and training
 import contextlib
 import math
 import os
+import shutil
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -191,7 +192,8 @@ def save_ckpt(tag: str) -> None:
         artifact.add_file(str(path.resolve()))
         logged = wandb.log_artifact(artifact)
         logged.wait()
-        os.system("wandb artifact cache cleanup 1GB")
+        shutil.rmtree(Path("~/.cache/wandb/artifacts").expanduser(), ignore_errors=True)
+        shutil.rmtree(Path("~/.local/share/wandb").expanduser(), ignore_errors=True)
 
 
 use_amp = torch.cuda.is_available()
