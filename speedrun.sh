@@ -16,7 +16,7 @@ wandb login
 uv run bpe_trainer.py
 
 NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
-N_SHARDS=150
+N_SHARDS=160
 PRETRAIN_STEPS=$(python -c "print(int($N_SHARDS * 60_000_000 / (24 * 2048 * $NGPU)))")
 
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \

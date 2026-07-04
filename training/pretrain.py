@@ -87,7 +87,7 @@ if use_ddp:
 if is_master:
     print(f"Building streaming dataset (rank {rank}/{world_size})")
 ds = make_dataset(rank, world_size, seq_len=args.seq_length, n_shards=args.n_shards)
-loader = DataLoader(ds, batch_size=args.batch_size, num_workers=2, prefetch_factor=4, pin_memory=torch.cuda.is_available())
+loader = DataLoader(ds, batch_size=args.batch_size, num_workers=4, prefetch_factor=8, pin_memory=torch.cuda.is_available())
 
 # Auto-compute total steps from data size so LR schedule decays to floor exactly when data runs out
 tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
@@ -201,15 +201,26 @@ autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if u
 
 model.train()
 train_t0 = time.perf_counter()
+data_wait_s = 0.0
 for epoch in range(start_epoch, args.max_epochs):
     epoch_loss = 0.0
     n_batches = 0
     accum_loss = 0.0
     epoch_step = 0
 
-    for batch_idx, (x, y) in enumerate(loader):
+    loader_iter = iter(loader)
+    batch_idx = -1
+    while True:
         if args.steps_per_epoch > 0 and epoch_step >= args.steps_per_epoch:
             break
+
+        fetch_t0 = time.perf_counter()
+        try:
+            x, y = next(loader_iter)
+        except StopIteration:
+            break
+        data_wait_s += time.perf_counter() - fetch_t0
+        batch_idx += 1
 
         x = x.to(device)
         y = y.to(device)
@@ -246,10 +257,14 @@ for epoch in range(start_epoch, args.max_epochs):
                 mean_loss = epoch_loss / n_batches
                 print(
                     f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} "
-                    f"lr {current_lr:.2e} wall {wall:.1f}s"
+                    f"lr {current_lr:.2e} wall {wall:.1f}s data_wait {data_wait_s:.1f}s"
                 )
                 if use_wandb:
-                    wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
+                    wandb.log(
+                        {"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall, "train/data_wait_s": data_wait_s},
+                        step=step,
+                    )
+                data_wait_s = 0.0
             if is_master and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
 
