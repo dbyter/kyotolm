@@ -18,7 +18,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
+from torchdata.stateful_dataloader import StatefulDataLoader
 from tokenizers import Tokenizer
 
 from models.kyotolmv2 import KyotoLM, Config
@@ -88,7 +88,7 @@ if use_ddp:
 if is_master:
     print(f"Building streaming dataset (rank {rank}/{world_size})")
 ds = make_dataset(rank, world_size, seq_len=args.seq_length, n_shards=args.n_shards)
-loader = DataLoader(ds, batch_size=args.batch_size, num_workers=4, prefetch_factor=8, pin_memory=torch.cuda.is_available())
+loader = StatefulDataLoader(ds, batch_size=args.batch_size, num_workers=4, prefetch_factor=8, pin_memory=torch.cuda.is_available())
 
 # Auto-compute total steps from data size so LR schedule decays to floor exactly when data runs out
 tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
@@ -145,6 +145,8 @@ if checkpoint_path.is_file():
     optim.load_state_dict(d["optimizer_state_dict"])
     if "scheduler_state_dict" in d:
         scheduler.load_state_dict(d["scheduler_state_dict"])
+    if "dataloader_state_dict" in d:
+        loader.load_state_dict(d["dataloader_state_dict"])
     start_epoch = d.get("epoch", 0)
     step = d.get("step", 0)
     if is_master:
@@ -176,6 +178,7 @@ def save_ckpt(tag: str) -> None:
         "model_state_dict": state_cpu,
         "optimizer_state_dict": optim.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
+        "dataloader_state_dict": loader.state_dict(),
         "epoch": epoch,
         "step": step,
         "vocab_size": args.vocab_size,

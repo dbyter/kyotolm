@@ -27,6 +27,7 @@ uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --learning_rate 1e-4 \
     --save_every 500 \
     --wandb_project kyotolm \
+    --no_wandb_artifacts \
     --fp8
 
 # SFT — fine-tune the pretrained checkpoint on smol-smoltalk + MMLU + GSM8K
@@ -38,5 +39,6 @@ uv run torchrun --nproc_per_node=$NGPU -m training.sft_trainer \
     --learning_rate 1e-4 \
     --save_every 500 \
     --wandb_project kyotolm \
+    --no_wandb_artifacts \
     --fp8
 

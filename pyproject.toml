@@ -11,5 +11,6 @@ dependencies = [
     "tokenizers>=0.21",
     "torch>=2.11",
     "torchao>=0.17",
+    "torchdata>=0.9",
     "wandb>=0.19",
 ]
