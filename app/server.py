@@ -4,8 +4,8 @@ Inference server for KyotoLM.
 Run with:
     uvicorn app.server:app --host 0.0.0.0 --port 8000
 
-Set KYOTOLM_CHECKPOINT to override which checkpoint gets loaded
-(defaults to ~/Downloads/checkpoints/sft.pt).
+Set KYOTOLM_CHECKPOINT to override which checkpoint gets loaded: a local path or a
+W&B artifact like sft:latest (defaults to ~/Downloads/checkpoints/sft.pt).
 """
 import os
 import time
@@ -23,7 +23,7 @@ from models import load_model
 
 TOKENIZER_PATH = "tokenizer.json"
 DEFAULT_CHECKPOINT = "~/Downloads/checkpoints/sft.pt"
-CHECKPOINT_PATH = Path(os.environ.get("KYOTOLM_CHECKPOINT", DEFAULT_CHECKPOINT)).expanduser()
+CHECKPOINT = os.environ.get("KYOTOLM_CHECKPOINT", DEFAULT_CHECKPOINT)
 
 app = FastAPI(title="KyotoLM Inference Server")
 
@@ -33,10 +33,8 @@ app = FastAPI(title="KyotoLM Inference Server")
 _generate_lock = Lock()
 
 
-if not CHECKPOINT_PATH.is_file():
-    raise FileNotFoundError(f"Checkpoint not found: {CHECKPOINT_PATH}")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = load_model(CHECKPOINT_PATH, device)
+model = load_model(CHECKPOINT, device)
 tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 bos_id = tokenizer.token_to_id("<bos>")
 eos_id = tokenizer.token_to_id("<eos>")
@@ -120,7 +118,7 @@ class GenerateResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "device": str(device), "checkpoint": str(CHECKPOINT_PATH)}
+    return {"status": "ok", "device": str(device), "checkpoint": CHECKPOINT}
 
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)

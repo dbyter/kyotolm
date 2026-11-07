@@ -6,7 +6,6 @@ Handles data loading, model loading, and training
 import contextlib
 import math
 import os
-import shutil
 import threading
 import time
 from argparse import ArgumentParser
@@ -23,6 +22,7 @@ from tokenizers import Tokenizer
 from models import MODELS
 from data_loader import make_dataset
 from training.optim import build_optimizers
+from training.wandb_utils import stage, upload_checkpoint
 
 
 parser = ArgumentParser()
@@ -32,6 +32,7 @@ parser.add_argument("--fp8", action="store_true", help="Use fp8 training for ~2x
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
 parser.add_argument("--no_wandb_artifacts", action="store_true", help="Disable uploading checkpoints as W&B artifacts")
+parser.add_argument("--artifact_every", type=int, default=5000, help="Upload weights ('lm', all versions kept) and resumable state ('lm-state', latest only) every N steps (a multiple of --save_every; 0 = final only)")
 parser.add_argument("--n_layers", type=int, default=12, help="Number of layers in the model")
 parser.add_argument("--n_heads", type=int, default=6, help="Number of heads in the model")
 parser.add_argument("--n_embedding_dim", type=int, default=768, help="Number of embedding dimensions in the model")
@@ -41,6 +42,7 @@ parser.add_argument("--dropout", type=float, default=0.1, help="Dropout paramete
 parser.add_argument("--batch_size", type=int, default=48, help="Per-GPU micro-batch size")
 parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps (effective_batch = batch_size * grad_accum_steps)")
 parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate for optimization")
+parser.add_argument("--adamw_lr", type=float, default=None, help="Muon only: lr for the embedding and norms (default: --learning_rate)")
 parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW optimizer decay")
 parser.add_argument("--max_epochs", type=int, default=1, help="Maximum number of epochs")
 parser.add_argument("--grad_clip", type=float, default=1.0, help="Clip gradient at")
@@ -120,7 +122,7 @@ model = torch.compile(raw_model, dynamic=False)
 if is_master:
     print("torch.compile enabled")
 
-optimizers = build_optimizers(raw_model, args.optimizer, args.learning_rate, args.weight_decay)
+optimizers = build_optimizers(raw_model, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr)
 
 
 def get_lr(current_step: int) -> float:
@@ -168,47 +170,64 @@ if use_ddp:
 raw_model = model.module if use_ddp else model
 
 
-def save_ckpt(tag: str) -> None:
-    """Save checkpoint — only called on rank 0."""
-    path = Path(checkpoint_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    state_cpu = {k: v.detach().cpu() for k, v in raw_model.state_dict().items()}
-    payload = {
-        "model_state_dict": state_cpu,
-        "optimizer_state_dict": [o.state_dict() for o in optimizers],
-        "scheduler_state_dict": [s.state_dict() for s in schedulers],
-        "dataloader_state_dict": loader.state_dict(),
-        "epoch": epoch,
+upload_artifacts = use_wandb and not args.no_wandb_artifacts
+
+
+def model_payload() -> dict:
+    """Weights on CPU plus what load_model() needs to rebuild the architecture."""
+    return {
+        "model_state_dict": {k: v.detach().cpu() for k, v in raw_model.state_dict().items()},
         "step": step,
         "vocab_size": args.vocab_size,
         "seq_length": args.seq_length,
         "config": vars(args),
     }
-    torch.save(payload, path)
-    print(f"saved checkpoint to {path.resolve()} ({tag})")
-    if use_wandb and not args.no_wandb_artifacts:
-        artifact = wandb.Artifact(
-            name=f"checkpoint-{tag.replace(' ', '-')}",
-            type="model",
-            metadata={"step": step, "epoch": epoch},
-        )
-        artifact.add_file(str(path.resolve()))
-        logged = wandb.log_artifact(artifact)
 
-        def _cleanup_after_upload():
-            logged.wait()
-            shutil.rmtree(Path("~/.cache/wandb/artifacts").expanduser(), ignore_errors=True)
-            shutil.rmtree(Path("~/.local/share/wandb").expanduser(), ignore_errors=True)
 
-        threading.Thread(target=_cleanup_after_upload, daemon=True).start()
+def save_ckpt(tag: str) -> None:
+    """Save checkpoint — only called on rank 0."""
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **model_payload(),
+        "optimizer_state_dict": [o.state_dict() for o in optimizers],
+        "scheduler_state_dict": [s.state_dict() for s in schedulers],
+        "dataloader_state_dict": loader.state_dict(),
+        "epoch": epoch,
+    }
+    # Write-then-rename: a crash mid-save can't corrupt the checkpoint, and hardlinked
+    # upload copies (see upload_ckpt) keep the previous file's contents.
+    tmp = checkpoint_path.with_suffix(".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, checkpoint_path)
+    print(f"saved checkpoint to {checkpoint_path.resolve()} ({tag})")
+
+
+def upload_ckpt(final: bool = False) -> None:
+    """Weights -> artifact 'lm' (every version kept; load anywhere with e.g. lm:step-5000).
+    Full resumable state -> 'lm-state' (latest only). Training pays only for the GPU->CPU weight
+    copy: the weights file is written on a background thread, the state is hardlinked, and
+    wandb's own service process does the network transfer."""
+    weights, state_file, at_step = model_payload(), stage(checkpoint_path, step), step
+
+    def write_and_upload() -> None:
+        weights_file = state_file.with_name(f"lm-weights-step{at_step}.pt")
+        torch.save(weights, weights_file)
+        upload_checkpoint(weights_file, "lm", at_step, keep_history=True, final=final)
+        upload_checkpoint(state_file, "lm-state", at_step, keep_history=False, final=final)
+
+    if final:
+        write_and_upload()
+    else:
+        threading.Thread(target=write_and_upload, daemon=True).start()
 
 
 use_amp = torch.cuda.is_available()
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
 
 model.train()
-train_t0 = time.perf_counter()
+train_t0 = log_t0 = time.perf_counter()
 data_wait_s = 0.0
+window_loss = 0.0
 for epoch in range(start_epoch, args.max_epochs):
     epoch_loss = 0.0
     n_batches = 0
@@ -247,34 +266,43 @@ for epoch in range(start_epoch, args.max_epochs):
 
         if not is_accum_step:
             if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)  # pre-clip norm
             for o, s in zip(optimizers, schedulers):
                 o.step()
                 s.step()
             model.zero_grad(set_to_none=True)
 
             epoch_loss += accum_loss
+            window_loss += accum_loss
             n_batches += 1
             step += 1
             epoch_step += 1
             accum_loss = 0.0
 
-            if is_master and step % args.log_every == 0:
-                wall = time.perf_counter() - train_t0
-                current_lr = schedulers[0].get_last_lr()[0]
-                mean_loss = epoch_loss.item() / n_batches
-                print(
-                    f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} "
-                    f"lr {current_lr:.2e} wall {wall:.1f}s data_wait {data_wait_s:.1f}s"
-                )
-                if use_wandb:
-                    wandb.log(
-                        {"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall, "train/data_wait_s": data_wait_s},
-                        step=step,
+            if step % args.log_every == 0:
+                if is_master:
+                    now = time.perf_counter()
+                    stats = {
+                        "train/loss": window_loss.item() / args.log_every,  # mean over this window, not the epoch
+                        "train/lr": schedulers[0].get_last_lr()[0],
+                        "train/grad_norm": grad_norm.item() if args.grad_clip > 0 else 0.0,  # last step of the window
+                        "train/tokens_per_s": tokens_per_step * args.log_every / (now - log_t0),
+                        "train/max_mem_gb": torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0,
+                        "train/data_wait_s": data_wait_s,
+                        "train/wall": now - train_t0,
+                    }
+                    print(
+                        f"epoch {epoch + 1} step {step} loss {stats['train/loss']:.4f} lr {stats['train/lr']:.2e} gnorm {stats['train/grad_norm']:.2f} "
+                        f"tok/s {stats['train/tokens_per_s']:,.0f} mem {stats['train/max_mem_gb']:.1f}GB "
+                        f"wall {stats['train/wall']:.1f}s data_wait {data_wait_s:.1f}s"
                     )
-                data_wait_s = 0.0
+                    if use_wandb:
+                        wandb.log(stats, step=step)
+                window_loss, data_wait_s, log_t0 = 0.0, 0.0, time.perf_counter()
             if is_master and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
+                if upload_artifacts and args.artifact_every > 0 and step % args.artifact_every == 0 and step < total_steps:
+                    upload_ckpt()
 
     if is_master:
         mean = float(epoch_loss) / max(n_batches, 1)
@@ -285,6 +313,8 @@ for epoch in range(start_epoch, args.max_epochs):
 
 if is_master and (args.save_every <= 0 or step % args.save_every != 0):
     save_ckpt("final")
+if is_master and upload_artifacts:
+    upload_ckpt(final=True)
 
 if use_wandb:
     wandb.finish()

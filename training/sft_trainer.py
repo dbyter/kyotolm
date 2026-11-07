@@ -8,8 +8,6 @@ import contextlib
 import itertools
 import math
 import os
-import shutil
-import threading
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -21,21 +19,23 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 
-from models import MODELS
+from models import MODELS, resolve_checkpoint
 from data_loader import make_sft_dataset
 from tokenizers import Tokenizer
 from training.optim import build_optimizers
+from training.wandb_utils import stage, upload_checkpoint
 
 
 parser = ArgumentParser()
 parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw", help="Match the pretraining optimizer")
-parser.add_argument("--pretrained_checkpoint", type=str, required=True, help="Local path or wandb artifact name (e.g. checkpoint-step-1000:latest)")
+parser.add_argument("--pretrained_checkpoint", type=str, required=True, help="Local path or wandb artifact name (e.g. lm:latest)")
 parser.add_argument("--sft_checkpoint_path", type=str, default="checkpoints/sft.pt", help="Path to save SFT checkpoints")
 parser.add_argument("--seq_length", type=int, default=2048, help="Max sequence length")
 parser.add_argument("--fp8", action="store_true", help="Use fp8 training for ~2x throughput (requires H100/H200 and torch>=2.11)")
 parser.add_argument("--batch_size", type=int, default=16, help="Per-GPU micro-batch size")
 parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Peak learning rate")
+parser.add_argument("--adamw_lr", type=float, default=None, help="Muon only: lr for the embedding and norms (default: --learning_rate)")
 parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW weight decay")
 parser.add_argument("--max_epochs", type=int, default=1, help="Number of epochs over the SFT dataset")
 parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
@@ -46,7 +46,7 @@ parser.add_argument("--eval_batches", type=int, default=20, help="Val batches pe
 parser.add_argument("--steps_per_epoch", type=int, default=0, help="Max optimizer steps per epoch (0 = full dataset)")
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
-parser.add_argument("--no_wandb_artifacts", action="store_true", help="Disable uploading checkpoints as W&B artifacts")
+parser.add_argument("--no_wandb_artifacts", action="store_true", help="Disable uploading the final checkpoint as W&B artifact 'sft'")
 args = parser.parse_args()
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -75,22 +75,12 @@ if use_wandb:
         resume="allow",
     )
 
-# Load pretrained checkpoint — local path or wandb artifact
-ckpt_path = Path(args.pretrained_checkpoint)
-if not ckpt_path.is_file():
-    if not use_wandb:
-        raise FileNotFoundError(
-            f"Checkpoint '{args.pretrained_checkpoint}' not found locally and --wandb_project is not set for artifact download."
-        )
-    if is_master:
-        print(f"Downloading wandb artifact: {args.pretrained_checkpoint}")
-    artifact = wandb.use_artifact(args.pretrained_checkpoint, type="model")
-    artifact_dir = artifact.download()
-    # artifact contains a single .pt file
-    pt_files = list(Path(artifact_dir).glob("*.pt"))
-    if not pt_files:
-        raise FileNotFoundError(f"No .pt file found in downloaded artifact at {artifact_dir}")
-    ckpt_path = pt_files[0]
+# Load pretrained checkpoint — local path or wandb artifact (e.g. lm:step-20000). Master downloads
+# once and shares the local path, since only master has a wandb run.
+ckpt_ref = [str(resolve_checkpoint(args.pretrained_checkpoint)) if is_master else None]
+if use_ddp:
+    dist.broadcast_object_list(ckpt_ref, src=0)
+ckpt_path = Path(ckpt_ref[0])
 
 if is_master:
     print(f"Loading pretrained checkpoint from {ckpt_path}")
@@ -151,7 +141,7 @@ total_steps = args.max_epochs * args.steps_per_epoch
 if is_master:
     print(f"SFT total steps: {total_steps}")
 
-optimizers = build_optimizers(model._orig_mod, args.optimizer, args.learning_rate, args.weight_decay)
+optimizers = build_optimizers(model._orig_mod, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr)
 
 
 def get_lr(current_step: int) -> float:
@@ -193,21 +183,6 @@ def save_ckpt(tag: str) -> None:
     }
     torch.save(payload, path)
     print(f"saved SFT checkpoint to {path.resolve()} ({tag})")
-    if use_wandb and not args.no_wandb_artifacts:
-        artifact = wandb.Artifact(
-            name=f"sft-checkpoint-{tag.replace(' ', '-')}",
-            type="model",
-            metadata={"step": step, "epoch": epoch},
-        )
-        artifact.add_file(str(path.resolve()))
-        logged = wandb.log_artifact(artifact)
-
-        def _cleanup_after_upload():
-            logged.wait()
-            shutil.rmtree(Path("~/.cache/wandb/artifacts").expanduser(), ignore_errors=True)
-            shutil.rmtree(Path("~/.local/share/wandb").expanduser(), ignore_errors=True)
-
-        threading.Thread(target=_cleanup_after_upload, daemon=True).start()
 
 
 use_amp = torch.cuda.is_available()
@@ -240,6 +215,7 @@ def log_val_loss() -> None:
 
 model.train()
 train_t0 = time.perf_counter()
+window_loss = 0.0
 
 for epoch in range(args.max_epochs):
     epoch_loss = 0.0
@@ -274,18 +250,21 @@ for epoch in range(args.max_epochs):
             model.zero_grad(set_to_none=True)
 
             epoch_loss += accum_loss
+            window_loss += accum_loss
             n_batches += 1
             step += 1
             epoch_step += 1
             accum_loss = 0.0
 
-            if is_master and step % args.log_every == 0:
-                wall = time.perf_counter() - train_t0
-                current_lr = schedulers[0].get_last_lr()[0]
-                mean_loss = epoch_loss.item() / n_batches
-                print(f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} lr {current_lr:.2e} wall {wall:.1f}s")
-                if use_wandb:
-                    wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
+            if step % args.log_every == 0:
+                if is_master:
+                    wall = time.perf_counter() - train_t0
+                    current_lr = schedulers[0].get_last_lr()[0]
+                    mean_loss = window_loss.item() / args.log_every  # mean over this window, not the epoch
+                    print(f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} lr {current_lr:.2e} wall {wall:.1f}s")
+                    if use_wandb:
+                        wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
+                window_loss = 0.0
 
             if args.eval_every > 0 and step % args.eval_every == 0:
                 log_val_loss()
@@ -305,6 +284,8 @@ if args.eval_every <= 0 or step % args.eval_every != 0:
 
 if is_master and (args.save_every <= 0 or step % args.save_every != 0):
     save_ckpt("final")
+if is_master and use_wandb and not args.no_wandb_artifacts:
+    upload_checkpoint(stage(checkpoint_path, step), "sft", step, keep_history=True, final=True)
 
 if use_wandb:
     wandb.finish()

@@ -6,10 +6,10 @@ GSM8K: greedy generation, exact match on the number after "####".
 
 Usage:
   python evaluate.py checkpoints/sft.pt [--mmlu_n 1000] [--gsm8k_n 200]
+  python evaluate.py sft:latest
 """
 import re
 from argparse import ArgumentParser
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -20,7 +20,7 @@ from data_loader import _format_mmlu
 from models import load_model
 
 parser = ArgumentParser()
-parser.add_argument("checkpoint", type=Path)
+parser.add_argument("checkpoint", help="Local path or W&B artifact, e.g. lm:step-20000")
 parser.add_argument("--mmlu_n", type=int, default=1000, help="MMLU test questions to score (0 = skip)")
 parser.add_argument("--gsm8k_n", type=int, default=200, help="GSM8K test problems to solve (0 = skip)")
 args = parser.parse_args()

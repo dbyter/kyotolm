@@ -1,7 +1,7 @@
 """Generate text with a trained checkpoint.
 
 Usage:
-  python generate.py [checkpoint_path] [--chat]
+  python generate.py [checkpoint_path | wandb artifact like lm:step-20000] [--chat]
 
   --chat   Use SFT chat format (User/Assistant turns). Pass for SFT checkpoints.
 """
@@ -15,7 +15,7 @@ from models import load_model
 from tokenizers import Tokenizer
 
 parser = ArgumentParser()
-parser.add_argument("checkpoint", nargs="?", help="Path to checkpoint (default: latest in checkpoints/)")
+parser.add_argument("checkpoint", nargs="?", help="Path or W&B artifact, e.g. lm:step-20000 (default: latest in checkpoints/)")
 parser.add_argument("--chat", action="store_true", help="Use chat format for SFT models")
 args = parser.parse_args()
 

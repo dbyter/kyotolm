@@ -2,8 +2,11 @@ import torch.nn as nn
 from torch.optim import AdamW, Muon
 
 
-def build_optimizers(model: nn.Module, name: str, lr: float, weight_decay: float) -> list:
-    """Pass the uncompiled model so parameter names aren't prefixed with _orig_mod."""
+def build_optimizers(model: nn.Module, name: str, lr: float, weight_decay: float, adamw_lr: float | None = None) -> list:
+    """Pass the uncompiled model so parameter names aren't prefixed with _orig_mod.
+
+    With muon, `lr` drives the Muon matrices and `adamw_lr` (default: `lr`) the embedding and norms.
+    """
     if name == "adamw":
         return [AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=(0.9, 0.95))]
 
@@ -14,7 +17,7 @@ def build_optimizers(model: nn.Module, name: str, lr: float, weight_decay: float
         (muon_params if is_hidden_matrix else adamw_params).append(p)
 
     return [
-        # match_rms_adamw scales Muon's update to AdamW's RMS, so both groups share one lr.
+        # match_rms_adamw scales Muon's update RMS to 0.2 * lr, i.e. AdamW-like.
         Muon(muon_params, lr=lr, weight_decay=weight_decay, adjust_lr_fn="match_rms_adamw"),
-        AdamW(adamw_params, lr=lr, weight_decay=weight_decay, betas=(0.9, 0.95)),
+        AdamW(adamw_params, lr=adamw_lr or lr, weight_decay=weight_decay, betas=(0.9, 0.95)),
     ]
