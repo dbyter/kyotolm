@@ -18,14 +18,15 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from models.kyotolmv2 import KyotoLM, Config
+from models import MODELS
 from data_loader import make_sft_dataset
+from training.optim import build_optimizers
 
 
 parser = ArgumentParser()
+parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw", help="Match the pretraining optimizer")
 parser.add_argument("--pretrained_checkpoint", type=str, required=True, help="Local path or wandb artifact name (e.g. checkpoint-step-1000:latest)")
 parser.add_argument("--sft_checkpoint_path", type=str, default="checkpoints/sft.pt", help="Path to save SFT checkpoints")
 parser.add_argument("--seq_length", type=int, default=2048, help="Max sequence length")
@@ -94,13 +95,15 @@ d = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 # Reconstruct model from saved config so arch args don't need to be re-specified
 saved_cfg = d.get("config", {})
-config = Config(
+model_version = saved_cfg.get("model", "v2")
+arch = MODELS[model_version]
+config = arch.Config(
     vocab_size=d.get("vocab_size", saved_cfg.get("vocab_size", 32000)),
     n_embedding_dim=saved_cfg.get("n_embedding_dim", 768),
     n_head=saved_cfg.get("n_heads", 6),
     n_layers=saved_cfg.get("n_layers", 12),
 )
-model = KyotoLM(config).to(device)
+model = arch.KyotoLM(config).to(device)
 state_dict = {k.replace("_orig_mod.", ""): v for k, v in d["model_state_dict"].items()}
 model.load_state_dict(state_dict)
 if is_master:
@@ -132,7 +135,7 @@ else:
 if is_master:
     print(f"SFT total steps: {total_steps}")
 
-optim = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+optimizers = build_optimizers(model._orig_mod, args.optimizer, args.learning_rate, args.weight_decay)
 
 
 def get_lr(current_step: int) -> float:
@@ -143,7 +146,7 @@ def get_lr(current_step: int) -> float:
     return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=get_lr)
+schedulers = [torch.optim.lr_scheduler.LambdaLR(o, lr_lambda=get_lr) for o in optimizers]
 
 if use_ddp:
     model = DDP(model, device_ids=[rank])
@@ -159,13 +162,14 @@ def save_ckpt(tag: str) -> None:
     state_cpu = {k: v.detach().cpu() for k, v in raw_model.state_dict().items()}
     payload = {
         "model_state_dict": state_cpu,
-        "optimizer_state_dict": optim.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
+        "optimizer_state_dict": [o.state_dict() for o in optimizers],
+        "scheduler_state_dict": [s.state_dict() for s in schedulers],
         "epoch": epoch,
         "step": step,
         "vocab_size": config.vocab_size,
         "seq_length": args.seq_length,
         "config": {
+            "model": model_version,
             "n_embedding_dim": config.n_embedding_dim,
             "n_heads": config.n_head,
             "n_layers": config.n_layers,
@@ -218,14 +222,15 @@ for epoch in range(args.max_epochs):
             loss = loss / args.grad_accum_steps
 
         loss.backward()
-        accum_loss += loss.item()
+        accum_loss += loss.detach()
 
         if not is_accum_step:
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optim.step()
-            scheduler.step()
-            optim.zero_grad(set_to_none=True)
+            for o, s in zip(optimizers, schedulers):
+                o.step()
+                s.step()
+            model.zero_grad(set_to_none=True)
 
             epoch_loss += accum_loss
             n_batches += 1
@@ -235,8 +240,8 @@ for epoch in range(args.max_epochs):
 
             if is_master and step % args.log_every == 0:
                 wall = time.perf_counter() - train_t0
-                current_lr = scheduler.get_last_lr()[0]
-                mean_loss = epoch_loss / n_batches
+                current_lr = schedulers[0].get_last_lr()[0]
+                mean_loss = epoch_loss.item() / n_batches
                 print(f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} lr {current_lr:.2e} wall {wall:.1f}s")
                 if use_wandb:
                     wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
@@ -245,7 +250,7 @@ for epoch in range(args.max_epochs):
                 save_ckpt(f"step {step}")
 
     if is_master:
-        mean = epoch_loss / max(n_batches, 1)
+        mean = float(epoch_loss) / max(n_batches, 1)
         wall = time.perf_counter() - train_t0
         print(f"epoch {epoch + 1} mean loss {mean:.4f} wall {wall:.1f}s")
         if use_wandb:

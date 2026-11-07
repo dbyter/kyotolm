@@ -16,11 +16,12 @@ wandb login
 uv run bpe_trainer.py
 
 NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
-N_SHARDS=160
+N_SHARDS=320
 PRETRAIN_STEPS=$(python -c "print(int($N_SHARDS * 60_000_000 / (24 * 2048 * $NGPU)))")
 
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
-    --n_layers 20 --n_heads 10 --n_embedding_dim 1280 \
+    --model v4 --optimizer muon \
+    --n_layers 26 --n_heads 13 --n_embedding_dim 1664 \
     --n_shards $N_SHARDS \
     --steps_per_epoch $PRETRAIN_STEPS \
     --batch_size 24 \
@@ -33,6 +34,7 @@ uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
 # SFT — fine-tune the pretrained checkpoint on smol-smoltalk + MMLU + GSM8K
 SFT_STEPS=$(python -c "print(460341 // 8 // $NGPU)")
 uv run torchrun --nproc_per_node=$NGPU -m training.sft_trainer \
+    --optimizer muon \
     --pretrained_checkpoint checkpoints/lm.pt \
     --steps_per_epoch $SFT_STEPS \
     --batch_size 8 \

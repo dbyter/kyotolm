@@ -17,15 +17,17 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tokenizers import Tokenizer
 
-from models.kyotolmv2 import KyotoLM, Config
+from models import MODELS
 from data_loader import make_dataset
+from training.optim import build_optimizers
 
 
 parser = ArgumentParser()
+parser.add_argument("--model", choices=MODELS, default="v2", help="Model architecture version")
+parser.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw", help="muon = Muon on hidden matrices + AdamW elsewhere")
 parser.add_argument("--fp8", action="store_true", help="Use fp8 training for ~2x throughput (requires H100/H200 and torch>=2.11)")
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
@@ -41,7 +43,7 @@ parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient ac
 parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate for optimization")
 parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW optimizer decay")
 parser.add_argument("--max_epochs", type=int, default=1, help="Maximum number of epochs")
-parser.add_argument("--grad_clip", type=float, default=0.1, help="Clip gradient at")
+parser.add_argument("--grad_clip", type=float, default=1.0, help="Clip gradient at")
 parser.add_argument("--log_every", type=int, default=10, help="Log step progress + loss every N steps")
 parser.add_argument("--save_every", type=int, default=1000, help="Save checkpoint model every N steps")
 parser.add_argument("--checkpoint_path", type=str, default="checkpoints/lm.pt", help="Path to save checkpoint to")
@@ -99,13 +101,14 @@ else:
 if is_master:
     print(f"Streaming {args.n_shards} shards — {total_steps} total steps ({tokens_per_step * total_steps / 1e9:.2f}B tokens), seq_len={args.seq_length}, batch_size={args.batch_size}")
 
-config = Config(
+arch = MODELS[args.model]
+config = arch.Config(
     vocab_size=args.vocab_size,
     n_embedding_dim=args.n_embedding_dim,
     n_head=args.n_heads,
     n_layers=args.n_layers,
 )
-raw_model = KyotoLM(config).to(device)
+raw_model = arch.KyotoLM(config).to(device)
 
 if args.fp8 and torch.cuda.is_available():
     from torchao.float8 import convert_to_float8_training
@@ -117,12 +120,7 @@ model = torch.compile(raw_model, dynamic=False)
 if is_master:
     print("torch.compile enabled")
 
-optim = AdamW(
-    model.parameters(),
-    lr=args.learning_rate,
-    weight_decay=args.weight_decay,
-    betas=(0.9, 0.95),
-)
+optimizers = build_optimizers(raw_model, args.optimizer, args.learning_rate, args.weight_decay)
 
 
 def get_lr(current_step: int) -> float:
@@ -134,7 +132,7 @@ def get_lr(current_step: int) -> float:
     return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=get_lr)
+schedulers = [torch.optim.lr_scheduler.LambdaLR(o, lr_lambda=get_lr) for o in optimizers]
 
 start_epoch = 0
 step = 0
@@ -142,9 +140,10 @@ checkpoint_path = Path(args.checkpoint_path)
 if checkpoint_path.is_file():
     d = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(d["model_state_dict"])
-    optim.load_state_dict(d["optimizer_state_dict"])
-    if "scheduler_state_dict" in d:
-        scheduler.load_state_dict(d["scheduler_state_dict"])
+    for o, s in zip(optimizers, d["optimizer_state_dict"]):
+        o.load_state_dict(s)
+    for sch, s in zip(schedulers, d["scheduler_state_dict"]):
+        sch.load_state_dict(s)
     if "dataloader_state_dict" in d:
         loader.load_state_dict(d["dataloader_state_dict"])
     start_epoch = d.get("epoch", 0)
@@ -176,8 +175,8 @@ def save_ckpt(tag: str) -> None:
     state_cpu = {k: v.detach().cpu() for k, v in raw_model.state_dict().items()}
     payload = {
         "model_state_dict": state_cpu,
-        "optimizer_state_dict": optim.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
+        "optimizer_state_dict": [o.state_dict() for o in optimizers],
+        "scheduler_state_dict": [s.state_dict() for s in schedulers],
         "dataloader_state_dict": loader.state_dict(),
         "epoch": epoch,
         "step": step,
@@ -244,14 +243,15 @@ for epoch in range(start_epoch, args.max_epochs):
             loss = loss / args.grad_accum_steps
 
         loss.backward()
-        accum_loss += loss.item()
+        accum_loss += loss.detach()  # stays on GPU; .item() only when logging avoids a per-step sync
 
         if not is_accum_step:
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optim.step()
-            scheduler.step()
-            optim.zero_grad(set_to_none=True)
+            for o, s in zip(optimizers, schedulers):
+                o.step()
+                s.step()
+            model.zero_grad(set_to_none=True)
 
             epoch_loss += accum_loss
             n_batches += 1
@@ -261,8 +261,8 @@ for epoch in range(start_epoch, args.max_epochs):
 
             if is_master and step % args.log_every == 0:
                 wall = time.perf_counter() - train_t0
-                current_lr = scheduler.get_last_lr()[0]
-                mean_loss = epoch_loss / n_batches
+                current_lr = schedulers[0].get_last_lr()[0]
+                mean_loss = epoch_loss.item() / n_batches
                 print(
                     f"epoch {epoch + 1} step {step} loss {mean_loss:.4f} "
                     f"lr {current_lr:.2e} wall {wall:.1f}s data_wait {data_wait_s:.1f}s"
@@ -277,7 +277,7 @@ for epoch in range(start_epoch, args.max_epochs):
                 save_ckpt(f"step {step}")
 
     if is_master:
-        mean = epoch_loss / max(n_batches, 1)
+        mean = float(epoch_loss) / max(n_batches, 1)
         wall = time.perf_counter() - train_t0
         print(f"epoch {epoch + 1} mean loss {mean:.4f} (device={device}) wall {wall:.1f}s")
         if use_wandb:

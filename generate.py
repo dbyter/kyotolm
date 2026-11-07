@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import torch
-from models.kyotolmv2 import KyotoLM, Config
+from models import MODELS
 from tokenizers import Tokenizer
 
 parser = ArgumentParser()
@@ -27,8 +27,9 @@ else:
 
 d = torch.load(ckpt_path, map_location="cpu")
 tc = d["config"]
-model = KyotoLM(
-    Config(
+arch = MODELS[tc.get("model", "v2")]
+model = arch.KyotoLM(
+    arch.Config(
         vocab_size=d["vocab_size"],
         n_embedding_dim=tc.get("n_embedding_dim", tc.get("embedding_dim", 768)),
         n_head=tc.get("n_heads", 6),
