@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>KyotoLM</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #23262e;
+    font-weight: 600;
+  }
+  header span { color: #7c9cff; }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .msg { display: flex; gap: 10px; }
+  .msg .role {
+    flex-shrink: 0;
+    width: 64px;
+    font-size: 12px;
+    color: #888;
+    padding-top: 4px;
+  }
+  .msg .bubble {
+    background: #1a1d24;
+    border-radius: 10px;
+    padding: 10px 14px;
+    white-space: pre-wrap;
+    line-height: 1.4;
+  }
+  .msg.user .bubble { background: #17233b; }
+  .msg.pending .bubble { color: #888; }
+  form {
+    display: flex;
+    gap: 10px;
+    padding: 16px 20px;
+    border-top: 1px solid #23262e;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  input {
+    flex: 1;
+    background: #1a1d24;
+    border: 1px solid #2a2e38;
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: #e6e6e6;
+    font-size: 14px;
+  }
+  input:focus { outline: none; border-color: #7c9cff; }
+  button {
+    background: #7c9cff;
+    color: #0f1115;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+  <header>Kyoto<span>LM</span></header>
+  <div id="messages"></div>
+  <form id="form">
+    <input id="input" type="text" placeholder="Ask something..." autocomplete="off" autofocus />
+    <button id="send" type="submit">Send</button>
+  </form>
+
+<script>
+  const messagesEl = document.getElementById("messages");
+  const formEl = document.getElementById("form");
+  const inputEl = document.getElementById("input");
+  const sendEl = document.getElementById("send");
+
+  const history = [];
+
+  function renderMessage(role, content, pending = false) {
+    const row = document.createElement("div");
+    row.className = `msg ${role}${pending ? " pending" : ""}`;
+    row.innerHTML = `<div class="role">${role}</div><div class="bubble"></div>`;
+    row.querySelector(".bubble").textContent = content;
+    messagesEl.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return row;
+  }
+
+  formEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    inputEl.value = "";
+    inputEl.disabled = true;
+    sendEl.disabled = true;
+
+    history.push({ role: "user", content: text });
+    renderMessage("user", text);
+    const pendingRow = renderMessage("assistant", "thinking...", true);
+
+    try {
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: history }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const reply = data.choices[0].message.content;
+      history.push({ role: "assistant", content: reply });
+      pendingRow.classList.remove("pending");
+      pendingRow.querySelector(".bubble").textContent = reply;
+    } catch (err) {
+      pendingRow.classList.remove("pending");
+      pendingRow.querySelector(".bubble").textContent = `Error: ${err.message}`;
+    } finally {
+      inputEl.disabled = false;
+      sendEl.disabled = false;
+      inputEl.focus();
+    }
+  });
+</script>
+</body>
+</html>

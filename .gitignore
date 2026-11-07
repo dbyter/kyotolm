@@ -20,3 +20,6 @@ checkpoints/
 
 # Secrets
 .env
+
+# macOS
+.DS_Store
