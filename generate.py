@@ -11,7 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import torch
-from models import MODELS
+from models import load_model
 from tokenizers import Tokenizer
 
 parser = ArgumentParser()
@@ -25,22 +25,8 @@ else:
     pts = list(Path("checkpoints").glob("*.pt"))
     ckpt_path = max(pts, key=lambda p: p.stat().st_mtime) if pts else Path("checkpoints/lm.pt")
 
-d = torch.load(ckpt_path, map_location="cpu")
-tc = d["config"]
-arch = MODELS[tc.get("model", "v2")]
-model = arch.KyotoLM(
-    arch.Config(
-        vocab_size=d["vocab_size"],
-        n_embedding_dim=tc.get("n_embedding_dim", tc.get("embedding_dim", 768)),
-        n_head=tc.get("n_heads", 6),
-        n_layers=tc.get("n_layers", 12),
-    )
-)
-state_dict = {k.replace("_orig_mod.", ""): v for k, v in d["model_state_dict"].items()}
-model.load_state_dict(state_dict)
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(dev)
-model.eval()
+model = load_model(ckpt_path, dev)
 
 tokenizer = Tokenizer.from_file("tokenizer.json")
 bos_id = tokenizer.token_to_id("<bos>")

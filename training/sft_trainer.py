@@ -5,6 +5,7 @@ Fine-tunes a pre-trained checkpoint on smol-smoltalk using DDP.
 Loss is computed only on assistant tokens (prompt tokens are masked to -100).
 """
 import contextlib
+import itertools
 import math
 import os
 import shutil
@@ -22,6 +23,7 @@ from torch.utils.data import DataLoader
 
 from models import MODELS
 from data_loader import make_sft_dataset
+from tokenizers import Tokenizer
 from training.optim import build_optimizers
 
 
@@ -39,6 +41,8 @@ parser.add_argument("--max_epochs", type=int, default=1, help="Number of epochs 
 parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
 parser.add_argument("--log_every", type=int, default=10, help="Log every N optimizer steps")
 parser.add_argument("--save_every", type=int, default=500, help="Save checkpoint every N optimizer steps (0 = disable)")
+parser.add_argument("--eval_every", type=int, default=250, help="Compute val loss every N optimizer steps (0 = only at the end)")
+parser.add_argument("--eval_batches", type=int, default=20, help="Val batches per rank per eval")
 parser.add_argument("--steps_per_epoch", type=int, default=0, help="Max optimizer steps per epoch (0 = full dataset)")
 parser.add_argument("--wandb_project", type=str, default="", help="W&B project name (empty = disabled)")
 parser.add_argument("--wandb_run_name", type=str, default="", help="W&B run name (auto-generated if empty)")
@@ -123,15 +127,27 @@ if is_master:
 if is_master:
     print("Building SFT dataset (smol-smoltalk, streaming)...")
 ds = make_sft_dataset(rank, world_size, seq_len=args.seq_length)
-loader = DataLoader(ds, batch_size=args.batch_size, num_workers=0, pin_memory=torch.cuda.is_available())
+loader = DataLoader(ds, batch_size=args.batch_size, num_workers=4, prefetch_factor=8, pin_memory=torch.cuda.is_available())
+# Fixed val set, read once so each eval is just forward passes. num_workers=1 matters: a partially
+# read HF stream in the main process hangs interpreter exit.
+val_ds = make_sft_dataset(rank, world_size, seq_len=args.seq_length, split="test")
+val_batches = list(itertools.islice(DataLoader(val_ds, batch_size=args.batch_size, num_workers=1), args.eval_batches))
 
-# smol-smoltalk has 460k train examples; at batch=16, seq=2048, 8 GPUs -> ~3600 steps
-SFT_DATASET_EXAMPLES = 460_341
-tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
-if args.steps_per_epoch > 0:
-    total_steps = args.max_epochs * args.steps_per_epoch
-else:
-    total_steps = args.max_epochs * (SFT_DATASET_EXAMPLES // args.batch_size // world_size)
+if args.steps_per_epoch == 0:
+    # Interleaving runs until smoltalk (460k examples, p=0.7) is exhausted.
+    n_examples = int(460_341 / 0.7)
+    # Packing makes the sequence count data-dependent, so estimate it by counting <bos> (one per
+    # conversation) in ~800 packed sequences. The sample comes from the unsharded stream so every
+    # rank computes the same number, and the 3% margin stops all ranks before any one runs dry
+    # (a rank exiting early would hang DDP).
+    bos_id = Tokenizer.from_file("tokenizer.json").token_to_id("<bos>")
+    sample = itertools.islice(DataLoader(make_sft_dataset(0, 1, seq_len=args.seq_length), batch_size=64, num_workers=1), 13)
+    x_sample = torch.cat([x for x, _ in sample])
+    examples_per_seq = (x_sample == bos_id).sum().item() / len(x_sample)
+    args.steps_per_epoch = int(0.97 * n_examples / examples_per_seq / (args.batch_size * world_size * args.grad_accum_steps))
+    if is_master:
+        print(f"Packing ~{examples_per_seq:.1f} conversations per sequence")
+total_steps = args.max_epochs * args.steps_per_epoch
 if is_master:
     print(f"SFT total steps: {total_steps}")
 
@@ -197,6 +213,31 @@ def save_ckpt(tag: str) -> None:
 use_amp = torch.cuda.is_available()
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
 
+
+@torch.no_grad()
+def val_loss() -> float:
+    """Token-weighted loss on the first eval_batches val batches, reduced across ranks. Call on every rank."""
+    totals = torch.zeros(2, device=device)  # [loss sum, assistant token count]
+    for x, y in val_batches:
+        x, y = x.to(device), y.to(device)
+        with autocast_ctx:
+            # raw_model bypasses DDP; no dropout, so no eval()/train() toggle (that would force a recompile)
+            logits = raw_model(x)
+            totals[0] += F.cross_entropy(logits.view(-1, config.vocab_size), y.view(-1), ignore_index=-100, reduction="sum")
+        totals[1] += (y != -100).sum()
+    if use_ddp:
+        dist.all_reduce(totals)
+    return (totals[0] / totals[1]).item()
+
+
+def log_val_loss() -> None:
+    loss = val_loss()
+    if is_master:
+        print(f"step {step} val_loss {loss:.4f}")
+        if use_wandb:
+            wandb.log({"val/loss": loss}, step=step)
+
+
 model.train()
 train_t0 = time.perf_counter()
 
@@ -246,6 +287,9 @@ for epoch in range(args.max_epochs):
                 if use_wandb:
                     wandb.log({"train/loss": mean_loss, "train/lr": current_lr, "train/wall": wall}, step=step)
 
+            if args.eval_every > 0 and step % args.eval_every == 0:
+                log_val_loss()
+
             if is_master and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
 
@@ -255,6 +299,9 @@ for epoch in range(args.max_epochs):
         print(f"epoch {epoch + 1} mean loss {mean:.4f} wall {wall:.1f}s")
         if use_wandb:
             wandb.log({"epoch/mean_loss": mean, "epoch/wall": wall}, step=step)
+
+if args.eval_every <= 0 or step % args.eval_every != 0:
+    log_val_loss()
 
 if is_master and (args.save_every <= 0 or step % args.save_every != 0):
     save_ckpt("final")

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from tokenizers import Tokenizer
 
-from models import MODELS
+from models import load_model
 
 TOKENIZER_PATH = "tokenizer.json"
 DEFAULT_CHECKPOINT = "~/Downloads/checkpoints/sft.pt"
@@ -33,29 +33,10 @@ app = FastAPI(title="KyotoLM Inference Server")
 _generate_lock = Lock()
 
 
-def _load_model(checkpoint_path: Path):
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    d = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    tc = d["config"]
-    arch = MODELS[tc.get("model", "v2")]
-    model = arch.KyotoLM(
-        arch.Config(
-            vocab_size=d["vocab_size"],
-            n_embedding_dim=tc.get("n_embedding_dim", tc.get("embedding_dim", 768)),
-            n_head=tc.get("n_heads", 6),
-            n_layers=tc.get("n_layers", 12),
-        )
-    )
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in d["model_state_dict"].items()}
-    model.load_state_dict(state_dict)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-    return model, device
-
-
-model, device = _load_model(CHECKPOINT_PATH)
+if not CHECKPOINT_PATH.is_file():
+    raise FileNotFoundError(f"Checkpoint not found: {CHECKPOINT_PATH}")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = load_model(CHECKPOINT_PATH, device)
 tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 bos_id = tokenizer.token_to_id("<bos>")
 eos_id = tokenizer.token_to_id("<eos>")

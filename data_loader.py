@@ -54,7 +54,9 @@ class SFTDataset(IterableDataset):
     """
     Streams smol-smoltalk, formats each conversation as:
         <bos>User: {content}\n\nAssistant: {content}<eos>User: ...
-    Yields (x, y) where y has -100 at prompt/user positions so only
+    Conversations are greedily packed into seq_len sequences (each starts with <bos>;
+    attention can cross conversation boundaries, which is standard for packed SFT).
+    Yields (x, y) where y has -100 at prompt/user/padding positions so only
     assistant tokens contribute to the loss.
     """
 
@@ -64,6 +66,10 @@ class SFTDataset(IterableDataset):
         self.seq_len = seq_len
 
     def __iter__(self):
+        return pack(self.examples(), self.seq_len)
+
+    def examples(self):
+        """Yields (token_ids, mask) per conversation, truncated to seq_len + 1."""
         tokenizer = Tokenizer.from_file(self.tokenizer_path)
         bos_id = tokenizer.token_to_id("<bos>")
         eos_id = tokenizer.token_to_id("<eos>")
@@ -98,16 +104,29 @@ class SFTDataset(IterableDataset):
             if len(token_ids) < 2 or sum(mask[1:]) == 0:
                 continue
 
-            # pad to fixed length so DataLoader default collation works
-            pad = self.seq_len + 1 - len(token_ids)
-            token_ids += [0] * pad
-            mask += [0] * pad
+            yield token_ids, mask
 
-            x = torch.tensor(token_ids[:-1], dtype=torch.long)
-            y = torch.tensor(token_ids[1:], dtype=torch.long)
-            loss_mask = torch.tensor(mask[1:], dtype=torch.bool)
-            y[~loss_mask] = -100
-            yield x, y
+
+def pack(examples, seq_len: int):
+    """Greedily packs (token_ids, mask) examples into padded (x, y) pairs of length seq_len."""
+    token_ids, mask = [], []
+    for ids, m in examples:
+        if len(token_ids) + len(ids) > seq_len + 1:
+            yield _to_xy(token_ids, mask, seq_len)
+            token_ids, mask = [], []
+        token_ids += ids
+        mask += m
+    if token_ids:
+        yield _to_xy(token_ids, mask, seq_len)
+
+
+def _to_xy(token_ids: list[int], mask: list[int], seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+    pad = seq_len + 1 - len(token_ids)
+    x = torch.tensor(token_ids[:-1] + [0] * pad, dtype=torch.long)
+    y = torch.tensor(token_ids[1:] + [0] * pad, dtype=torch.long)
+    loss_mask = torch.tensor(mask[1:] + [0] * pad, dtype=torch.bool)
+    y[~loss_mask] = -100
+    return x, y
 
 
 def _to_messages(role_user: str, role_assistant: str) -> dict:
