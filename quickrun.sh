@@ -1,8 +1,8 @@
 uv sync
 
-NGPU=$(python -c "import torch; print(torch.cuda.device_count())")
-N_SHARDS=320
-PRETRAIN_STEPS=$(python -c "print(int($N_SHARDS * 60_000_000 / (24 * 2048 * $NGPU)))")
+NGPU=$(uv run python -c "import torch; print(torch.cuda.device_count())")
+N_SHARDS=${N_SHARDS:-320}
+PRETRAIN_STEPS=$(uv run python -c "print(int($N_SHARDS * 60_000_000 / (24 * 2048 * $NGPU)))")
 
 uv run torchrun --nproc_per_node=$NGPU -m training.pretrain \
     --model v4 --optimizer muon \
