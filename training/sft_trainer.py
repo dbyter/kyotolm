@@ -36,6 +36,7 @@ parser.add_argument("--batch_size", type=int, default=16, help="Per-GPU micro-ba
 parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Peak learning rate")
 parser.add_argument("--adamw_lr", type=float, default=None, help="Muon only: lr for the embedding and norms (default: --learning_rate)")
+parser.add_argument("--lm_head_lr", type=float, default=None, help="Muon only: lr for the untied lm_head (default: --adamw_lr)")
 parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW weight decay")
 parser.add_argument("--max_epochs", type=int, default=1, help="Number of epochs over the SFT dataset")
 parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
@@ -141,7 +142,7 @@ total_steps = args.max_epochs * args.steps_per_epoch
 if is_master:
     print(f"SFT total steps: {total_steps}")
 
-optimizers = build_optimizers(model._orig_mod, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr)
+optimizers = build_optimizers(model._orig_mod, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr, args.lm_head_lr)
 
 
 def get_lr(current_step: int) -> float:

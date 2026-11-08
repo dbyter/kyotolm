@@ -2,10 +2,10 @@ from pathlib import Path
 
 import torch
 
-from models import kyotolmv2, kyotolmv4
+from models import kyotolmv2, kyotolmv4, kyotolmv5
 
 # Checkpoints record their arch under config["model"]; older ones predate the key and are v2.
-MODELS = {"v2": kyotolmv2, "v4": kyotolmv4}
+MODELS = {"v2": kyotolmv2, "v4": kyotolmv4, "v5": kyotolmv5}
 
 
 def resolve_checkpoint(ref: str | Path) -> Path:

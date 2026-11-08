@@ -7,6 +7,7 @@ import contextlib
 import math
 import os
 import threading
+import itertools
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -16,11 +17,12 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tokenizers import Tokenizer
 
 from models import MODELS
-from data_loader import make_dataset
+from data_loader import make_dataset, make_val_dataset
 from training.optim import build_optimizers
 from training.wandb_utils import stage, upload_checkpoint
 
@@ -43,6 +45,9 @@ parser.add_argument("--batch_size", type=int, default=48, help="Per-GPU micro-ba
 parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps (effective_batch = batch_size * grad_accum_steps)")
 parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate for optimization")
 parser.add_argument("--adamw_lr", type=float, default=None, help="Muon only: lr for the embedding and norms (default: --learning_rate)")
+parser.add_argument("--eval_every", type=int, default=500, help="Held-out loss every N optimizer steps (0 = never)")
+parser.add_argument("--eval_batches", type=int, default=8, help="Held-out batches per rank per eval")
+parser.add_argument("--lm_head_lr", type=float, default=None, help="Muon only: lr for the untied lm_head (default: --adamw_lr)")
 parser.add_argument("--weight_decay", type=float, default=0.1, help="AdamW optimizer decay")
 parser.add_argument("--max_epochs", type=int, default=1, help="Maximum number of epochs")
 parser.add_argument("--grad_clip", type=float, default=1.0, help="Clip gradient at")
@@ -93,6 +98,7 @@ if is_master:
     print(f"Building streaming dataset (rank {rank}/{world_size})")
 ds = make_dataset(rank, world_size, seq_len=args.seq_length, n_shards=args.n_shards)
 loader = StatefulDataLoader(ds, batch_size=args.batch_size, num_workers=4, prefetch_factor=8, pin_memory=torch.cuda.is_available())
+val_batches = list(itertools.islice(DataLoader(make_val_dataset(rank, world_size, seq_len=args.seq_length), batch_size=args.batch_size, num_workers=1), args.eval_batches))
 
 # Auto-compute total steps from data size so LR schedule decays to floor exactly when data runs out
 tokens_per_step = args.batch_size * args.seq_length * world_size * args.grad_accum_steps
@@ -122,7 +128,7 @@ model = torch.compile(raw_model, dynamic=False)
 if is_master:
     print("torch.compile enabled")
 
-optimizers = build_optimizers(raw_model, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr)
+optimizers = build_optimizers(raw_model, args.optimizer, args.learning_rate, args.weight_decay, args.adamw_lr, args.lm_head_lr)
 
 
 def get_lr(current_step: int) -> float:
@@ -144,8 +150,12 @@ if checkpoint_path.is_file():
     model.load_state_dict(d["model_state_dict"])
     for o, s in zip(optimizers, d["optimizer_state_dict"]):
         o.load_state_dict(s)
-    for sch, s in zip(schedulers, d["scheduler_state_dict"]):
+    for o, sch, s in zip(optimizers, schedulers, d["scheduler_state_dict"]):
+        base_lrs = sch.base_lrs  # from the CLI; the checkpoint's would override them
         sch.load_state_dict(s)
+        sch.base_lrs = base_lrs
+        for g, base_lr in zip(o.param_groups, base_lrs):
+            g["initial_lr"], g["lr"] = base_lr, base_lr * get_lr(sch.last_epoch)
     if "dataloader_state_dict" in d:
         loader.load_state_dict(d["dataloader_state_dict"])
     start_epoch = d.get("epoch", 0)
@@ -224,6 +234,29 @@ def upload_ckpt(final: bool = False) -> None:
 use_amp = torch.cuda.is_available()
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
 
+
+
+def val_loss() -> float:
+    """Mean held-out loss over val_batches, reduced across ranks. Call on every rank."""
+    total = torch.zeros((), device=device)
+    with torch.no_grad(), autocast_ctx:
+        for x, y in val_batches:
+            total += F.cross_entropy(raw_model(x.to(device)).view(-1, args.vocab_size), y.to(device).view(-1))
+    if use_ddp:
+        dist.all_reduce(total)
+    return total.item() / (len(val_batches) * world_size)
+
+
+def weight_rms() -> dict:
+    rms = lambda t: t.detach().float().pow(2).mean().sqrt().item()
+    blocks = [p for n, p in raw_model.named_parameters() if "transformer_blocks." in n and p.ndim == 2]  # names carry _orig_mod. when compiled
+    return {
+        "weights/rms_blocks": torch.stack([p.detach().float().pow(2).mean() for p in blocks]).mean().sqrt().item(),
+        "weights/rms_embedding": rms(raw_model.embedding.weight),
+        "weights/rms_lm_head": rms(raw_model.lm_head.weight),
+    }
+
+
 model.train()
 train_t0 = log_t0 = time.perf_counter()
 data_wait_s = 0.0
@@ -267,6 +300,14 @@ for epoch in range(start_epoch, args.max_epochs):
         if not is_accum_step:
             if args.grad_clip > 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)  # pre-clip norm
+            if (step + 1) % args.log_every == 0:  # stability signals, GPU tensors until logged
+                group_grad_norms = {
+                    type(o).__name__.lower(): torch.stack([p.grad.norm() for g in o.param_groups for p in g["params"] if p.grad is not None]).norm()
+                    for o in optimizers
+                }
+                max_logit = logits.detach().abs().max()
+                log_probs = logits.detach().float().log_softmax(-1)
+                entropy = -(log_probs.exp() * log_probs).sum(-1).mean()  # well below the loss = overconfident
             for o, s in zip(optimizers, schedulers):
                 o.step()
                 s.step()
@@ -286,6 +327,10 @@ for epoch in range(start_epoch, args.max_epochs):
                         "train/loss": window_loss.item() / args.log_every,  # mean over this window, not the epoch
                         "train/lr": schedulers[0].get_last_lr()[0],
                         "train/grad_norm": grad_norm.item() if args.grad_clip > 0 else 0.0,  # last step of the window
+                        **{f"train/grad_norm_{name}": v.item() for name, v in group_grad_norms.items()},
+                        "train/max_logit": max_logit.item(),
+                        "train/entropy": entropy.item(),
+                        **weight_rms(),
                         "train/tokens_per_s": tokens_per_step * args.log_every / (now - log_t0),
                         "train/max_mem_gb": torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0,
                         "train/data_wait_s": data_wait_s,
@@ -293,12 +338,19 @@ for epoch in range(start_epoch, args.max_epochs):
                     }
                     print(
                         f"epoch {epoch + 1} step {step} loss {stats['train/loss']:.4f} lr {stats['train/lr']:.2e} gnorm {stats['train/grad_norm']:.2f} "
+                        f"({' '.join(f'{n} {v.item():.2f}' for n, v in group_grad_norms.items())}) max_logit {stats['train/max_logit']:.1f} entropy {stats['train/entropy']:.2f} "
                         f"tok/s {stats['train/tokens_per_s']:,.0f} mem {stats['train/max_mem_gb']:.1f}GB "
                         f"wall {stats['train/wall']:.1f}s data_wait {data_wait_s:.1f}s"
                     )
                     if use_wandb:
                         wandb.log(stats, step=step)
                 window_loss, data_wait_s, log_t0 = 0.0, 0.0, time.perf_counter()
+            if args.eval_every > 0 and step % args.eval_every == 0:
+                loss = val_loss()
+                if is_master:
+                    print(f"step {step} val_loss {loss:.4f}")
+                    if use_wandb:
+                        wandb.log({"val/loss": loss}, step=step)
             if is_master and args.save_every > 0 and step % args.save_every == 0:
                 save_ckpt(f"step {step}")
                 if upload_artifacts and args.artifact_every > 0 and step % args.artifact_every == 0 and step < total_steps:

@@ -178,3 +178,10 @@ def make_dataset(rank: int, world_size: int, seq_len: int = 2048, n_shards: int 
     )
     hf_ds = split_dataset_by_node(hf_ds, rank=rank, world_size=world_size)
     return StreamingTokenDataset(hf_ds, "tokenizer.json", seq_len)
+
+
+def make_val_dataset(rank: int, world_size: int, seq_len: int = 2048, shard: int = 300) -> StreamingTokenDataset:
+    """Held-out pretraining data: one shard beyond anything make_dataset streams."""
+    hf_ds = load_dataset("parquet", data_files={"train": [f"{BASE}/shard_{shard:05d}.parquet"]}, split="train", streaming=True)
+    hf_ds = split_dataset_by_node(hf_ds, rank=rank, world_size=world_size)
+    return StreamingTokenDataset(hf_ds, "tokenizer.json", seq_len)
